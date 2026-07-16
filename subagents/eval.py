@@ -24,5 +24,6 @@ def build_eval_agent(sandbox_backend) -> SubAgent:
             "re-annotate, or just retune."
         ),
         "tools": [],
-        "backend": sandbox_backend,  # reuse - weights are already there
+        # reuse training sandbox (weights already there); omitted until configured
+        **({"backend": sandbox_backend} if sandbox_backend is not None else {}),
     }

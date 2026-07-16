@@ -1,0 +1,26 @@
+{
+  "use_case": "Traffic monitoring from a fixed roadside camera",
+  "deployment_target": "edge GPU (Jetson Orin)",
+  "classes": [
+    {
+      "name": "car",
+      "target_images": 500,
+      "intra_class_variability": "high",
+      "notes": "Many makes, colors, viewing angles; day and night footage."
+    },
+    {
+      "name": "truck",
+      "target_images": 300,
+      "intra_class_variability": "medium",
+      "notes": "Box trucks and semis; mostly highway angles."
+    },
+    {
+      "name": "bus",
+      "target_images": 200,
+      "intra_class_variability": "low",
+      "notes": "City buses, consistent shape and livery."
+    }
+  ],
+  "split": { "train": 0.7, "val": 0.2, "test": 0.1 },
+  "total_target_images": 1000
+}

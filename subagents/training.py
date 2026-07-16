@@ -14,5 +14,6 @@ def build_training_agent(sandbox_backend) -> SubAgent:
             "write runs/train/metrics.json."
         ),
         "tools": [],
-        "backend": sandbox_backend,  # Modal GPU sandbox
+        # GPU sandbox; omitted (-> default backend) until one is configured
+        **({"backend": sandbox_backend} if sandbox_backend is not None else {}),
     }

@@ -60,6 +60,17 @@ Then run the UI (`../deep-agents-ui`, `yarn dev`) and connect with:
 - Deployment URL: `http://127.0.0.1:2024`
 - Assistant ID: `yolo-agent`
 
+## Testing subagents in isolation
+
+Subagents are developed and verified independently before orchestrator
+integration. The sourcing agent is first — see `docs/sourcing-subagent.md`:
+
+```bash
+.venv/bin/python -m pytest tests/ -q                        # contract tests, no keys
+python scripts/run_sourcing_isolated.py --mock --fresh      # behavioral, mocked search
+python scripts/run_sourcing_isolated.py --fresh             # real Roboflow/Kaggle MCP
+```
+
 ## Current state / TODOs
 
 This scaffold wires up the orchestrator, all six subagents, the three HITL
