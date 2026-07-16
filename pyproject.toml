@@ -1,0 +1,23 @@
+[project]
+name = "yolo-deep-agent"
+version = "0.1.0"
+description = "Autonomous YOLO curation & training deep agent (deepagents-native)"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents",
+    "langgraph-cli[inmem]",
+    "langchain-core",
+    "langchain-mcp-adapters",
+    "langchain-tavily",
+    "modal",
+    "ultralytics",
+    "supervision",
+    "python-dotenv",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["subagents", "tools", "backends"]

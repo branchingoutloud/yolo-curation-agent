@@ -1,0 +1,23 @@
+# env
+.env
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# langgraph
+.langgraph_api/
+
+# run artifacts (regenerated per run; keep the directory tracked, not its contents)
+run_artifacts/*
+!run_artifacts/.gitkeep
+
+# model weights / large training outputs
+*.pt
+*.onnx
