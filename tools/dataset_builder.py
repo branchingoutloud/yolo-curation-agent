@@ -15,24 +15,36 @@ directly in the orchestrator process, the same pattern as `zero_shot_annotate`.
 
 Directory convention this module assumes (dataset-agent is responsible for
 getting sources into this shape, e.g. via Roboflow/Kaggle MCP tools or
-`download_and_extract` below, before calling `merge_and_split_dataset`):
+`download_and_extract` below, before calling `merge_and_split_dataset`) - two
+layouts are recognized:
 
+  flat (e.g. a manually-staged or Kaggle source):
     /workspace/sourced/<i>/images/*.{jpg,jpeg,png}
     /workspace/sourced/<i>/labels/*.txt      (YOLO format, same stem as image)
     /workspace/sourced/<i>/classes.txt       (one class name per line, in the
                                                numeric-ID order that source's
                                                label files use)
 
-`<i>` is the 0-based index of that entry in sources.json's array. `classes.txt`
-is required per source because YOLO label files reference classes by numeric
-ID only - IDs are not portable across independently-annotated sources, so
-merging without remapping through each source's own class list would silently
-scramble labels.
+  Roboflow YOLOv8 export (what versions_export(export_format="yolov8") +
+  download_and_extract actually produces - real exports never contain a bare
+  classes.txt, only data.yaml, and always pre-split into train/valid/test):
+    /workspace/sourced/<i>/data.yaml         (`names:` list or {id: name} dict)
+    /workspace/sourced/<i>/{train,valid,test}/images/*.{jpg,jpeg,png}
+    /workspace/sourced/<i>/{train,valid,test}/labels/*.txt
+
+`<i>` is the 0-based index of that entry in sources.json's array. A source's
+own class list (however it's spelled) is required because YOLO label files
+reference classes by numeric ID only - IDs are not portable across
+independently-annotated sources, so merging without remapping through each
+source's own class list would silently scramble labels. A Roboflow source's
+own train/valid/test split is intentionally NOT preserved - every image is
+pooled and this module re-splits across the whole merged/deduped set itself.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import random
 import shutil
@@ -45,6 +57,8 @@ import yaml
 from langchain_core.tools import tool
 
 from tools.workspace_paths import workspace_path as _workspace_path
+
+logger = logging.getLogger("dataset_agent")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 _MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2GB guardrail against runaway downloads
@@ -60,16 +74,20 @@ def download_and_extract(url: str, dest_dir: str) -> str:
     tar(.gz) archives are extracted in place; anything else is saved as-is
     under `dest_dir`. Returns a short summary of what was written.
     """
+    logger.info("download_and_extract: url=%s dest=%s", url, dest_dir)
     try:
         dest = _workspace_path(dest_dir)
     except ValueError as exc:
+        logger.error("download_and_extract: invalid dest path %s: %s", dest_dir, exc)
         return f"Error: {exc}. Pass a path starting with /workspace/ instead."
     dest.mkdir(parents=True, exist_ok=True)
 
     try:
         response = requests.get(url, stream=True, timeout=60)
         response.raise_for_status()
+        logger.info("download_and_extract: HTTP %s content-type=%s", response.status_code, response.headers.get('Content-Type', '?'))
     except requests.RequestException as exc:
+        logger.error("download_and_extract: request failed for %s: %s", url, exc)
         return f"Download failed for {url}: {exc}"
 
     content_type = response.headers.get("Content-Type", "")
@@ -83,6 +101,7 @@ def download_and_extract(url: str, dest_dir: str) -> str:
             total += len(chunk)
             if total > _MAX_DOWNLOAD_BYTES:
                 download_path.unlink(missing_ok=True)
+                logger.error("download_and_extract: exceeded %dMB guardrail for %s", _MAX_DOWNLOAD_BYTES // (1024 * 1024), url)
                 return f"Download aborted: {url} exceeded the {_MAX_DOWNLOAD_BYTES // (1024 * 1024)}MB guardrail."
             f.write(chunk)
 
@@ -90,6 +109,7 @@ def download_and_extract(url: str, dest_dir: str) -> str:
         with zipfile.ZipFile(download_path) as zf:
             zf.extractall(dest)
         download_path.unlink()
+        logger.info("download_and_extract: extracted zip, %d bytes from %s", total, url)
         return f"Downloaded and extracted {total} bytes from {url} into {dest_dir} (zip archive)."
 
     try:
@@ -97,10 +117,12 @@ def download_and_extract(url: str, dest_dir: str) -> str:
             with tarfile.open(download_path) as tf:
                 tf.extractall(dest)  # noqa: S202 - dest is confined to the workspace root by _workspace_path
             download_path.unlink()
+            logger.info("download_and_extract: extracted tar, %d bytes from %s", total, url)
             return f"Downloaded and extracted {total} bytes from {url} into {dest_dir} (tar archive)."
     except tarfile.TarError:
         pass
 
+    logger.info("download_and_extract: saved raw file %s/%s (%d bytes)", dest_dir, download_name, total)
     return f"Downloaded {total} bytes from {url} to {dest_dir}/{download_name} (not an archive, saved as-is)."
 
 
@@ -134,9 +156,11 @@ def select_primary_source(sources_json_path: str = "/workspace/sources.json") ->
     merge_and_split_dataset naturally builds the dataset from this one source
     alone (it skips anything not staged rather than erroring).
     """
+    logger.info("select_primary_source: reading %s", sources_json_path)
     try:
         sources = _load_sources(sources_json_path)
     except (ValueError, FileNotFoundError) as exc:
+        logger.error("select_primary_source: failed to load sources: %s", exc)
         return f"Error: {exc}"
 
     candidates = [
@@ -145,7 +169,14 @@ def select_primary_source(sources_json_path: str = "/workspace/sources.json") ->
         if source.get("status") == "available"
         and str(source.get("annotation_format", "")).strip().lower() == "yolo"
     ]
+    logger.info("select_primary_source: %d total sources, %d qualify (available + YOLO)", len(sources), len(candidates))
+    for i, src in enumerate(sources):
+        logger.debug(
+            "  source[%d]: id=%s status=%s format=%s image_count=%s",
+            i, src.get('dataset_id'), src.get('status'), src.get('annotation_format'), src.get('image_count'),
+        )
     if not candidates:
+        logger.warning("select_primary_source: no qualifying candidates found")
         return (
             "No source currently qualifies (need status == 'available' and "
             "annotation_format == 'YOLO'). Nothing to select - report this back "
@@ -153,6 +184,10 @@ def select_primary_source(sources_json_path: str = "/workspace/sources.json") ->
         )
 
     best_index, best_source = max(candidates, key=lambda pair: pair[1].get("image_count", 0) or 0)
+    logger.info(
+        "select_primary_source: SELECTED index=%d id=%s image_count=%s (best of %d)",
+        best_index, best_source.get('dataset_id'), best_source.get('image_count'), len(candidates),
+    )
     return (
         f"Selected index {best_index}: source={best_source.get('source')!r} "
         f"dataset_id={best_source.get('dataset_id')!r} url={best_source.get('url')!r} "
@@ -191,12 +226,70 @@ def _canonical_class_list(class_budget_path: str, sources: list[dict]) -> list[s
     return sorted(classes)
 
 
-def _read_classes_txt(source_dir: Path) -> list[str] | None:
+_ROBOFLOW_SPLIT_DIRS = ("train", "valid", "val", "test")
+
+
+def _read_classes(source_dir: Path) -> list[str] | None:
+    """A source's class list, in numeric-ID order - tolerant of a flat
+    classes.txt (this module's own manually-staged convention) or a Roboflow
+    YOLOv8 export's data.yaml (`names:` as a list or a {id: name} dict) - a
+    real Roboflow export never contains a bare classes.txt, only data.yaml.
+    """
     classes_file = source_dir / "classes.txt"
-    if not classes_file.exists():
+    if classes_file.exists():
+        with open(classes_file, encoding="utf-8") as f:
+            classes = [line.strip() for line in f if line.strip()]
+        logger.debug("_read_classes: %s -> %d classes from classes.txt: %s", source_dir.name, len(classes), classes)
+        return classes
+
+    data_yaml = source_dir / "data.yaml"
+    if data_yaml.exists():
+        try:
+            with open(data_yaml, encoding="utf-8") as f:
+                parsed = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            logger.warning("_read_classes: %s is not valid YAML: %s", data_yaml, exc)
+            return None
+        names = parsed.get("names") if isinstance(parsed, dict) else None
+        if isinstance(names, list):
+            logger.debug("_read_classes: %s -> %d classes from data.yaml (list): %s", source_dir.name, len(names), names)
+            return list(names)
+        if isinstance(names, dict):
+            classes = [names[k] for k in sorted(names, key=int)]
+            logger.debug("_read_classes: %s -> %d classes from data.yaml (dict): %s", source_dir.name, len(classes), classes)
+            return classes
+        logger.warning("_read_classes: %s has no usable 'names' field - source cannot be merged", data_yaml)
         return None
-    with open(classes_file, encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+
+    logger.warning("_read_classes: no classes.txt or data.yaml under %s - source cannot be merged", source_dir)
+    return None
+
+
+def _iter_image_label_pairs(source_dir: Path) -> list[tuple[Path, Path]]:
+    """(image_path, label_path) pairs for a staged source - tolerant of a flat
+    images/+labels/ layout or a Roboflow-style pre-split train/valid/test
+    (each with its own images/+labels/). A source's own pre-applied split is
+    not preserved here; merge_and_split_dataset re-splits the merged pool
+    itself, so every split's images are pooled together at this stage.
+    """
+    flat_images, flat_labels = source_dir / "images", source_dir / "labels"
+    if flat_images.is_dir():
+        search_roots = [(flat_images, flat_labels)]
+    else:
+        search_roots = [
+            (source_dir / split / "images", source_dir / split / "labels")
+            for split in _ROBOFLOW_SPLIT_DIRS
+            if (source_dir / split / "images").is_dir()
+        ]
+
+    pairs: list[tuple[Path, Path]] = []
+    for images_dir, labels_dir in search_roots:
+        if not images_dir.is_dir() or not labels_dir.is_dir():
+            continue
+        for image_path in sorted(images_dir.iterdir()):
+            if image_path.suffix.lower() in IMAGE_EXTENSIONS:
+                pairs.append((image_path, labels_dir / f"{image_path.stem}.txt"))
+    return pairs
 
 
 def _remap_label_file(
@@ -205,6 +298,13 @@ def _remap_label_file(
     canonical_index: dict[str, int],
 ) -> list[str] | None:
     """Rewrite a YOLO label file's class IDs into the canonical class list.
+
+    `canonical_index` must be keyed by `.strip().casefold()`d class names -
+    different dataset authors spell the same class differently ("Kangaroo" vs
+    "kangaroo" vs "KANGAROO"; observed live across sourcing-agent's own
+    entries for the same search), and an exact-string lookup here would
+    silently drop every box in every label file as "unmapped" the moment
+    casing differs, with no error - just an empty merged dataset.
 
     Returns the remapped lines, or `None` if every box referenced a class not
     in the canonical list (image should be dropped rather than kept with zero
@@ -223,7 +323,7 @@ def _remap_label_file(
             if local_id < 0 or local_id >= len(local_classes):
                 continue
             class_name = local_classes[local_id]
-            canonical_id = canonical_index.get(class_name)
+            canonical_id = canonical_index.get(class_name.strip().casefold())
             if canonical_id is None:
                 continue
             remapped.append(" ".join([str(canonical_id), *parts[1:]]))
@@ -267,20 +367,25 @@ def merge_and_split_dataset(
     why, images dropped as duplicates) - not JSON - so the calling agent can
     relay it close to verbatim as its final message.
     """
+    logger.info("merge_and_split_dataset: starting (sources=%s, sourced=%s, output=%s)", sources_json_path, sourced_dir, output_dir)
     try:
         import imagehash
         from PIL import Image
     except ImportError as exc:
+        logger.error("merge_and_split_dataset: missing dependency: %s", exc)
         return f"Missing dependency ({exc}); run `uv sync` after adding pillow/imagehash to pyproject.toml."
 
     try:
         sources = _load_sources(sources_json_path)
         canonical_classes = _canonical_class_list(class_budget_path, sources)
-        canonical_index = {name: i for i, name in enumerate(canonical_classes)}
+        canonical_index = {name.strip().casefold(): i for i, name in enumerate(canonical_classes)}
         sourced_root = _workspace_path(sourced_dir)
         out_root = _workspace_path(output_dir)
     except (ValueError, FileNotFoundError) as exc:
+        logger.error("merge_and_split_dataset: setup failed: %s", exc)
         return f"Error: {exc}"
+
+    logger.info("merge_and_split_dataset: canonical_classes=%s (%d total)", canonical_classes, len(canonical_classes))
 
     skipped: list[str] = []
     kept_hashes: list["imagehash.ImageHash"] = []
@@ -290,46 +395,64 @@ def merge_and_split_dataset(
     for i, source in enumerate(sources):
         label = f"{source.get('source', '?')}/{source.get('dataset_id', '?')}"
         status = source.get("status")
+        logger.info("merge_and_split_dataset: source[%d] %s status=%s format=%s", i, label, status, source.get('annotation_format'))
         if status != "available":
-            skipped.append(f"{label}: status={status!r} - not merged (needs annotation-agent, which isn't active this run)")
+            reason = f"{label}: status={status!r} - not merged (needs annotation-agent, which isn't active this run)"
+            skipped.append(reason)
+            logger.warning("merge_and_split_dataset: SKIPPED source[%d]: %s", i, reason)
             continue
         annotation_format = str(source.get("annotation_format", "")).strip().lower()
         if annotation_format != "yolo":
-            skipped.append(f"{label}: annotation_format={source.get('annotation_format')!r} not supported yet (only YOLO-format sources auto-merge)")
+            reason = f"{label}: annotation_format={source.get('annotation_format')!r} not supported yet (only YOLO-format sources auto-merge)"
+            skipped.append(reason)
+            logger.warning("merge_and_split_dataset: SKIPPED source[%d]: %s", i, reason)
             continue
 
         source_dir = sourced_root / str(i)
-        images_dir = source_dir / "images"
-        labels_dir = source_dir / "labels"
-        local_classes = _read_classes_txt(source_dir)
-        if not images_dir.is_dir() or not labels_dir.is_dir() or local_classes is None:
-            skipped.append(f"{label}: no local files at {sourced_dir}/{i}/ yet - fetch it first (Roboflow/Kaggle MCP tools or download_and_extract)")
+        local_classes = _read_classes(source_dir)
+        image_label_pairs = _iter_image_label_pairs(source_dir) if local_classes is not None else []
+        if local_classes is None or not image_label_pairs:
+            reason = f"{label}: no local files at {sourced_dir}/{i}/ yet - fetch it first (Roboflow/Kaggle MCP tools or download_and_extract)"
+            skipped.append(reason)
+            logger.warning("merge_and_split_dataset: SKIPPED source[%d]: %s", i, reason)
             continue
 
-        for image_path in sorted(images_dir.iterdir()):
-            if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                continue
-            label_path = labels_dir / f"{image_path.stem}.txt"
+        src_img_count, src_label_match, src_remap_ok, src_dedup = 0, 0, 0, 0
+        for image_path, label_path in image_label_pairs:
+            src_img_count += 1
             if not label_path.exists():
+                logger.debug("merge: source[%d] no label for %s", i, image_path.name)
                 continue
+            src_label_match += 1
             remapped = _remap_label_file(label_path, local_classes, canonical_index)
             if remapped is None:
+                logger.debug("merge: source[%d] all classes unmapped in %s", i, label_path.name)
                 continue
+            src_remap_ok += 1
 
             try:
                 with Image.open(image_path) as img:
                     img_hash = imagehash.phash(img)
-            except OSError:
+            except OSError as exc:
+                logger.warning("merge: source[%d] cannot open %s: %s", i, image_path.name, exc)
                 continue
 
             if any((img_hash - kept_hash) <= dedup_hash_threshold for kept_hash in kept_hashes):
                 duplicates_dropped += 1
+                src_dedup += 1
+                logger.debug("merge: source[%d] near-duplicate dropped: %s", i, image_path.name)
                 continue
 
             kept_hashes.append(img_hash)
             kept.append((image_path, remapped))
 
+        logger.info(
+            "merge_and_split_dataset: source[%d] result: images=%d labels_matched=%d remapped=%d dedup_dropped=%d kept=%d",
+            i, src_img_count, src_label_match, src_remap_ok, src_dedup, src_remap_ok - src_dedup,
+        )
+
     if not kept:
+        logger.error("merge_and_split_dataset: no images merged - nothing to build a dataset from")
         summary_lines = [
             "No images merged - nothing available to build a dataset from.",
             *(f"- {s}" for s in skipped),
@@ -346,6 +469,11 @@ def merge_and_split_dataset(
         "val": kept[n_train : n_train + n_val],
         "test": kept[n_train + n_val :],
     }
+    logger.info(
+        "merge_and_split_dataset: split %d images -> train=%d val=%d test=%d (%.0f/%.0f/%.0f%%), %d duplicates dropped",
+        len(kept), len(splits['train']), len(splits['val']), len(splits['test']),
+        train_ratio * 100, val_ratio * 100, _test_ratio * 100, duplicates_dropped,
+    )
 
     for split_name, items in splits.items():
         (out_root / "images" / split_name).mkdir(parents=True, exist_ok=True)
@@ -372,6 +500,8 @@ def merge_and_split_dataset(
         "names": {i: name for i, name in enumerate(canonical_classes)},
     }
     (out_root / "data.yaml").write_text(yaml.safe_dump(data_yaml, sort_keys=False), encoding="utf-8")
+    logger.info("merge_and_split_dataset: wrote data.yaml to %s (nc=%d, classes=%s)", output_dir, len(canonical_classes), canonical_classes)
+    logger.info("merge_and_split_dataset: per-class box counts: %s", class_counts)
 
     summary_lines = [
         f"Merged {len(kept)} images ({duplicates_dropped} near-duplicates dropped) into {output_dir}.",

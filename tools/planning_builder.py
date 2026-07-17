@@ -19,9 +19,12 @@ list from a dict and tolerates this file being absent entirely):
 from __future__ import annotations
 
 import json
+import logging
 from langchain_core.tools import tool
 
 from tools.workspace_paths import workspace_path
+
+logger = logging.getLogger("planning_agent")
 
 # Mirrors skills/cv-dataset-curation/SKILL.md's "Images-per-class by
 # intra-class variability" table - kept here as an actual enforced floor
@@ -67,11 +70,13 @@ def write_plan(
     message.
     """
     if not classes:
+        logger.warning("write_plan: empty classes list")
         return "Error: classes list is empty - nothing to plan."
 
     ratios = split_ratios or {"train": 0.7, "val": 0.2, "test": 0.1}
     ratio_sum = sum(ratios.values())
     if not (0.98 <= ratio_sum <= 1.02):
+        logger.error("write_plan: split_ratios sum to %.3f, not ~1.0", ratio_sum)
         return f"Error: split_ratios {ratios} sum to {ratio_sum:.3f}, not ~1.0."
 
     warnings: list[str] = []
@@ -147,6 +152,11 @@ def write_plan(
 
     (workspace_path("/workspace/class_budget.json")).write_text(json.dumps(budget_data, indent=2), encoding="utf-8")
     (workspace_path("/workspace/plan.md")).write_text("\n".join(plan_lines) + "\n", encoding="utf-8")
+    logger.info("write_plan: wrote plan.md and class_budget.json for %d class(es), %d images total", len(class_names), sum(budgets.values()))
+    logger.info("write_plan: budgets=%s, split=%s", budgets, ratios)
+    if warnings:
+        for w in warnings:
+            logger.warning("write_plan: %s", w)
 
     total = sum(budgets.values())
     summary_lines = [

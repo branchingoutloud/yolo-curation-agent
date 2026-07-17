@@ -19,4 +19,11 @@ def request_approval(stage: str, summary: str) -> str:
     be plain, readable text (not a JSON blob) - it is what renders in the
     approval card the user sees.
     """
-    return f"Approval requested for {stage}: {summary}"
+    # This function body only ever runs for real on an "approve"/"edit" HITL
+    # decision - langchain's HumanInTheLoopMiddleware short-circuits "reject"
+    # with a synthetic ToolMessage instead of calling this tool at all. So the
+    # return here must say the request was actually approved, not just that
+    # it was made - a neutral echo of the request (the old behavior) left the
+    # model unable to tell approval had happened and made it re-ask instead
+    # of proceeding.
+    return f"User approved this request for stage '{stage}'. Proceed: {summary}"

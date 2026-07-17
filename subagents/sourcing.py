@@ -1,6 +1,6 @@
 import os
 
-from deepagents import SubAgent
+from deepagents import FilesystemPermission, SubAgent
 
 from tools.model_builder import build_model
 from tools.sourcing_builder import append_sources
@@ -67,8 +67,13 @@ def build_sourcing_agent(roboflow_tools: list, kaggle_tools: list, web_search_to
             "list of new/updated entries - it reads sources.json first and updates-"
             "or-appends by (source, dataset_id), so you never need to read the file "
             "yourself or worry about overwriting what a previous round already "
-            "found. Don't pass sources_json_path unless you have a real reason to "
-            "point at a different file - its default is already correct. Each entry "
+            "found. Never call write_file or edit_file on sources.json yourself, "
+            "even if you found only one source or want to fix a mistake in it - "
+            "write_file/edit_file are permission-blocked for that exact path and "
+            "will fail; append_sources is the only way to write it, including for "
+            "a single entry. Don't pass sources_json_path unless you have a real "
+            "reason to point at a different file - its default is already correct. "
+            "Each entry "
             "needs: source, dataset_id, url, classes_covered, "
             "image_count (a single total int for the whole dataset - do NOT put a "
             "per-class breakdown here, that's what annotation_coverage is for), "
@@ -93,6 +98,16 @@ def build_sourcing_agent(roboflow_tools: list, kaggle_tools: list, web_search_to
             *_filter_kaggle_tools(kaggle_tools),
             *web_search_tools,
             append_sources,
+        ],
+        # Code-enforced backstop for the prompt rule above: a live run showed
+        # the model can still call write_file on sources.json directly instead
+        # of append_sources (producing a malformed/double-escaped file) despite
+        # being told not to - denying "write" at the filesystem-middleware
+        # level makes write_file/edit_file fail outright for this exact path,
+        # leaving append_sources (a separate tool with its own direct file I/O,
+        # unaffected by this rule) as the only way through.
+        "permissions": [
+            FilesystemPermission(operations=["write"], paths=["/workspace/sources.json"], mode="deny"),
         ],
     }
     model = build_model(os.environ.get("SOURCING_AGENT_MODEL"))

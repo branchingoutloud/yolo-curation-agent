@@ -23,9 +23,12 @@ Required shape per source entry (matches what dataset-agent expects):
 from __future__ import annotations
 
 import json
+import logging
 from langchain_core.tools import tool
 
 from tools.workspace_paths import workspace_path
+
+logger = logging.getLogger("sourcing_agent")
 
 _REQUIRED_FIELDS = {"source", "dataset_id", "status"}
 
@@ -67,9 +70,11 @@ def append_sources(new_sources: list[dict], sources_json_path: str = "/workspace
     sources covering 'car' (1,850 images); 'bus' unlabeled - 300 raw images,
     0 annotated. Recommend routing 'bus' to annotation."
     """
+    logger.info("append_sources: called with %d new entries, path=%s", len(new_sources), sources_json_path)
     try:
         path = workspace_path(sources_json_path)
     except ValueError as exc:
+        logger.error("append_sources: invalid path %s: %s", sources_json_path, exc)
         return f"Error: {exc}. Pass a path starting with /workspace/ instead (or omit it - the default is correct)."
 
     existing: list[dict] = []
@@ -94,10 +99,12 @@ def append_sources(new_sources: list[dict], sources_json_path: str = "/workspace
         if key in by_key:
             existing[by_key[key]] = entry
             updated += 1
+            logger.debug("append_sources: updated existing entry %s", key)
         else:
             existing.append(entry)
             by_key[key] = len(existing) - 1
             added += 1
+            logger.debug("append_sources: added new entry %s", key)
 
     path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
@@ -113,4 +120,7 @@ def append_sources(new_sources: list[dict], sources_json_path: str = "/workspace
     if rejected:
         summary_lines.append("Rejected (not written):")
         summary_lines.extend(f"- {r}" for r in rejected)
+        for r in rejected:
+            logger.warning("append_sources: REJECTED entry: %s", r)
+    logger.info("append_sources: %d added, %d updated, %d total, coverage=%s", added, updated, len(existing), coverage)
     return "\n".join(summary_lines)

@@ -193,14 +193,19 @@ def build_model(model_spec: str | None):
         base_url = os.environ.get(
             "OLLAMA_BASE_URL", "https://ollama.com" if api_key else "http://localhost:11434"
         )
+        # reasoning=True: without it, langchain_ollama silently discards gpt-oss's
+        # "thinking" tokens instead of merging/surfacing them - if the model exhausts
+        # its output budget mid-thought (e.g. a long tool-heavy turn), that produces a
+        # totally empty AIMessage with no error, which a ReAct loop reads as "done".
         try:
             if api_key:
                 return _ThrottledCloudChatOllama(
                     model=model_name,
                     base_url=base_url,
                     client_kwargs={"headers": {"Authorization": f"Bearer {api_key}"}},
+                    reasoning=True,
                 )
-            return ChatOllama(model=model_name, base_url=base_url)
+            return ChatOllama(model=model_name, base_url=base_url, reasoning=True)
         except Exception as exc:  # noqa: BLE001 - degrade, don't crash startup
             print(f"[model_builder] failed to init {model_spec!r} ({exc}); falling back to caller's default.")
             return None

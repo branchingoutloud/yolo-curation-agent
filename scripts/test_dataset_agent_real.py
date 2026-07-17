@@ -18,6 +18,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -29,6 +30,19 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 _TEST_WORKSPACE = Path(__file__).resolve().parent.parent / "run_artifacts_real_test"
 os.environ["RUN_ARTIFACTS_DIR"] = str(_TEST_WORKSPACE)
+
+_TEST_WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_TEST_WORKSPACE / "agent_run.log", encoding="utf-8", mode="w"),
+    ],
+)
+for _noisy in ("langsmith", "urllib3", "PIL", "anthropic", "httpx", "httpcore", "asyncio", "deepagents"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -43,22 +57,38 @@ from backends.project_backend import project_backend  # noqa: E402
 from scripts.seed_real_sources import seed_real_sources  # noqa: E402
 from subagents.dataset import build_dataset_agent  # noqa: E402
 from tools.mcp_clients import get_kaggle_tools, get_roboflow_tools  # noqa: E402
+from tools.model_builder import build_model  # noqa: E402
 
 async def main(roboflow_tools: list, kaggle_tools: list):
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+            root_logger.removeHandler(handler)
+
     if _TEST_WORKSPACE.exists():
         import shutil
-
         shutil.rmtree(_TEST_WORKSPACE)
     seed_real_sources(_TEST_WORKSPACE)
+
+    file_handler = logging.FileHandler(_TEST_WORKSPACE / "agent_run.log", encoding="utf-8", mode="w")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+    root_logger.addHandler(file_handler)
+    logger = logging.getLogger("dataset_agent")
+    logger.info("=== Test run started ===")
 
     print(f"\nRoboflow tools available: {len(roboflow_tools)} {'(set ROBOFLOW_API_KEY in .env to enable)' if not roboflow_tools else ''}")
     print(f"Kaggle tools available: {len(kaggle_tools)}\n")
 
+    model_spec = os.environ.get("DATASET_AGENT_MODEL") or os.environ.get("ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-4-6")
+    model = build_model(model_spec) or model_spec
+    logger.info("Using model: %s (resolved from %s)", model, model_spec)
+
     spec = build_dataset_agent(roboflow_tools=roboflow_tools, kaggle_tools=kaggle_tools)
-    print(f"Model: {spec.get('model', 'inherits default')}\n")
+    print(f"Model: {model_spec}\n")
 
     test_agent = create_deep_agent(
-        model=spec.get("model"),
+        model=model,
         system_prompt=spec["system_prompt"],
         tools=spec["tools"],
         backend=project_backend,
