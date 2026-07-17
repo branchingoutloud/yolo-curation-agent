@@ -117,6 +117,51 @@ def _load_sources(sources_json_path: str) -> list[dict]:
     return data
 
 
+@tool
+def select_primary_source(sources_json_path: str = "/workspace/sources.json") -> str:
+    """Pick the single mergeable source with the highest image_count.
+
+    Filters sources_json_path down to entries with status == "available" and
+    annotation_format == "YOLO" (the same filter merge_and_split_dataset
+    applies), and returns the one with the largest image_count as the sole
+    dataset to fetch/stage/train on - real arithmetic over the file, not a
+    count the calling agent has to eyeball itself across a long sources.json.
+
+    Returns a plain-text description of the chosen source (its 0-based index,
+    source, dataset_id, url, image_count) or a plain-text explanation if no
+    entry currently qualifies. Only fetch/stage the returned index's files
+    under sourced_dir/<index>/ - leave every other source unfetched, so
+    merge_and_split_dataset naturally builds the dataset from this one source
+    alone (it skips anything not staged rather than erroring).
+    """
+    try:
+        sources = _load_sources(sources_json_path)
+    except (ValueError, FileNotFoundError) as exc:
+        return f"Error: {exc}"
+
+    candidates = [
+        (i, source)
+        for i, source in enumerate(sources)
+        if source.get("status") == "available"
+        and str(source.get("annotation_format", "")).strip().lower() == "yolo"
+    ]
+    if not candidates:
+        return (
+            "No source currently qualifies (need status == 'available' and "
+            "annotation_format == 'YOLO'). Nothing to select - report this back "
+            "rather than fetching anything."
+        )
+
+    best_index, best_source = max(candidates, key=lambda pair: pair[1].get("image_count", 0) or 0)
+    return (
+        f"Selected index {best_index}: source={best_source.get('source')!r} "
+        f"dataset_id={best_source.get('dataset_id')!r} url={best_source.get('url')!r} "
+        f"image_count={best_source.get('image_count')!r} classes_covered={best_source.get('classes_covered')!r}. "
+        f"Fetch/stage only this index's files under sourced_dir/{best_index}/, then call "
+        f"merge_and_split_dataset - do not stage any other source."
+    )
+
+
 def _canonical_class_list(class_budget_path: str, sources: list[dict]) -> list[str]:
     """Best-effort class list, tolerant of planning-agent's exact JSON shape.
 

@@ -9,7 +9,7 @@ import os
 
 from deepagents import SubAgent
 
-from tools.dataset_builder import download_and_extract, merge_and_split_dataset
+from tools.dataset_builder import download_and_extract, merge_and_split_dataset, select_primary_source
 from tools.model_builder import build_model
 
 # DATASET_AGENT_MODEL is an OPTIONAL override on top of ORCHESTRATOR_MODEL -
@@ -79,36 +79,43 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
     spec: SubAgent = {
         "name": "dataset-agent",
         "description": (
-            "Fetches sourced data (per sources.json), merges it, dedupes near-identical "
-            "images, splits train/val/test, and emits a YOLO-format data.yaml. Call this "
-            "after sourcing-agent has a sources.json you're satisfied with."
+            "Selects the single richest sourced dataset (per sources.json) by image_count, "
+            "fetches it, dedupes near-identical images, splits train/val/test, and emits a "
+            "YOLO-format data.yaml. Call this after sourcing-agent has a sources.json you're "
+            "satisfied with."
         ),
         "system_prompt": (
-            "Read sources.json first - it is written by sourcing-agent as a JSON array, "
-            "one object per candidate source, shaped like:\n"
+            "sources.json is written by sourcing-agent as a JSON array, one object per "
+            "candidate source, shaped like:\n"
             '  {"source": "roboflow_universe", "dataset_id": "...", "url": "...", '
             '"classes_covered": ["car"], "image_count": 1200, "annotation_format": "YOLO", '
             '"license": "...", "annotation_coverage": {"car": 800}, "quality_notes": "...", '
             '"status": "available"}\n'
-            "Only entries with status == \"available\" and annotation_format == \"YOLO\" are "
-            "mergeable right now. Entries with status == \"needs_annotation\" (or any other "
-            "unannotated/unsupported-format state) must NOT be merged or fabricated - "
-            "annotation-agent is not part of the active roster in this run, so just leave "
-            "those pending and name them in your summary (e.g. \"'bus' still needs "
-            "annotation - 300 raw images found, 0 annotated\"). Do not invent labels for them.\n\n"
-            "For each 'available' source, stage its raw files locally before merging: "
+            "This run trains on exactly ONE source, not a merge of everything sourcing-agent "
+            "found - sources.json is a catalog of candidates, not all of it is meant to be "
+            "used every time. Call select_primary_source first: it filters to entries with "
+            "status == \"available\" and annotation_format == \"YOLO\" (the only ones "
+            "auto-mergeable right now) and returns the single one with the highest "
+            "image_count. Fetch/stage ONLY the index it returns - do not fetch or touch any "
+            "other entry, even other 'available' ones; leaving them unstaged is intentional, "
+            "not an oversight, and merge_and_split_dataset will report them as skipped rather "
+            "than error. If select_primary_source reports nothing qualifies (e.g. every "
+            "source still needs annotation), say so plainly rather than fetching anything - "
+            "annotation-agent is not part of the active roster in this run, so a "
+            "\"needs_annotation\" source cannot be used no matter its image_count.\n\n"
+            "Stage the selected source's raw files locally before merging: "
             "/workspace/sourced/<index>/images/, /workspace/sourced/<index>/labels/ "
             "(YOLO .txt, one per image) and /workspace/sourced/<index>/classes.txt (that "
             "source's own class names, one per line, in the numeric-ID order its label "
             "files use - required so class IDs can be safely remapped into one canonical "
-            "list; without it, merging would silently scramble labels). <index> is that "
-            "entry's 0-based position in the sources.json array. Before fetching anything, "
+            "list; without it, merging would silently scramble labels). <index> is the "
+            "0-based position select_primary_source returned. Before fetching anything, "
             "check whether that index's files already exist at /workspace/sourced/<index>/ "
             "(e.g. ls it) - a prior run or a human may have already staged them there, and "
             "re-fetching is unnecessary work that can also fail for URLs that were never "
             "meant to be fetched directly (a Roboflow Universe project page, for instance, "
-            "is a browsable URL, not a download link). Only if a source's files are missing "
-            "should you fetch them. For a Roboflow Universe source (found via "
+            "is a browsable URL, not a download link). Only if the selected source's files "
+            "are missing should you fetch them. For a Roboflow Universe source (found via "
             "universe_search, not one you already own), the fetch chain is exactly this "
             "sequence - none of these steps can be skipped or assumed:\n"
             "  1. projects_fork(url=<the source's Universe URL>) - this is ASYNC and only "
@@ -130,7 +137,7 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             "If any step fails or a required tool isn't available, say so plainly and "
             "specifically in your summary (which step, what error) rather than treating "
             "the source as vaguely blocked or silently giving up.\n\n"
-            "Once every mergeable source is staged, call merge_and_split_dataset once - call "
+            "Once the selected source is staged, call merge_and_split_dataset once - call "
             "it with no path arguments (sources_json_path/sourced_dir/output_dir/"
             "class_budget_path) unless you have a real reason to override a default; its "
             "defaults (including writing to /workspace/dataset) are already correct and "
@@ -149,6 +156,7 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
         "tools": [
             *_filter_roboflow_tools(roboflow_tools),
             *_filter_kaggle_tools(kaggle_tools),
+            select_primary_source,
             download_and_extract,
             merge_and_split_dataset,
         ],
