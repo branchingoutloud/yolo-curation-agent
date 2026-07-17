@@ -21,14 +21,19 @@ def _build_mcp_client() -> MultiServerMCPClient | None:
     roboflow_key = os.environ.get("ROBOFLOW_API_KEY")
     if roboflow_key:
         servers["roboflow"] = {
-            "url": os.environ.get("ROBOFLOW_MCP_URL", "https://mcp.roboflow.com"),
+            "url": os.environ.get("ROBOFLOW_MCP_URL", "https://mcp.roboflow.com/mcp"),
             "transport": "streamable_http",
             "headers": {"Authorization": f"Bearer {roboflow_key}"},
         }
 
     kaggle_url = os.environ.get("KAGGLE_MCP_URL")
     if kaggle_url:
-        servers["kaggle"] = {"url": kaggle_url, "transport": "streamable_http"}
+        kaggle_key = os.environ.get("KAGGLE_API_KEY")
+        servers["kaggle"] = {
+            "url": kaggle_url,
+            "transport": "streamable_http",
+            **({"headers": {"Authorization": f"Bearer {kaggle_key}"}} if kaggle_key else {}),
+        }
 
     if not servers:
         return None
@@ -42,7 +47,11 @@ def _mcp_client() -> MultiServerMCPClient | None:
 
 def _get_tools_sync(server_name: str) -> list:
     client = _mcp_client()
-    if client is None:
+    if client is None or server_name not in client.connections:
+        # Either no server has credentials at all, or this specific one
+        # wasn't registered (e.g. KAGGLE_MCP_URL unset while ROBOFLOW_API_KEY
+        # is set) - both are normal degraded-config states, not errors worth
+        # logging.
         return []
     try:
         return asyncio.run(client.get_tools(server_name=server_name))

@@ -1,8 +1,19 @@
+import os
+
 from deepagents import SubAgent
+
+from tools.model_builder import build_model
+
+# EVAL_AGENT_MODEL is an OPTIONAL override - unset by default, so eval-agent
+# inherits ORCHESTRATOR_MODEL. Diagnosing *why* a class underperforms (not
+# just which metric is low) is the one genuinely reasoning-heavy step here,
+# but the mechanical parts (confusion matrix via execute(), writing the two
+# output files) don't need the orchestrator's full-size model - a lighter
+# override is a reasonable default to set explicitly, same as training-agent.
 
 
 def build_eval_agent(sandbox_backend) -> SubAgent:
-    return {
+    spec: SubAgent = {
         "name": "eval-agent",
         "description": (
             "Analyzes a completed training run: confusion matrix, per-class "
@@ -26,3 +37,7 @@ def build_eval_agent(sandbox_backend) -> SubAgent:
         "tools": [],
         "backend": sandbox_backend,  # reuse - weights are already there
     }
+    model = build_model(os.environ.get("EVAL_AGENT_MODEL"))
+    if model is not None:
+        spec["model"] = model
+    return spec
