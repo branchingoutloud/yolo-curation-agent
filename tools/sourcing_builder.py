@@ -10,10 +10,11 @@ Required shape per source entry (matches what dataset-agent expects):
       "dataset_id": str,
       "url": str,
       "classes_covered": [str, ...],
-      "image_count": int,
+      "image_count": int,               # TOTAL images in this dataset - a
+                                         # single number, NOT a per-class dict
       "annotation_format": "YOLO" | "Pascal VOC" | ...,
       "license": str,
-      "annotation_coverage": {class_name: int | null, ...},
+      "annotation_coverage": {class_name: int | null, ...},  # per-class IS a dict
       "quality_notes": str,
       "status": "available" | "needs_annotation" | ...
     }
@@ -27,6 +28,29 @@ from langchain_core.tools import tool
 from tools.workspace_paths import workspace_path
 
 _REQUIRED_FIELDS = {"source", "dataset_id", "status"}
+
+
+def _as_total_images(image_count: object) -> int:
+    """Coerce an entry's image_count into a single int total.
+
+    Defensive against a model conflating image_count (meant to be a flat
+    int) with annotation_coverage (a per-class dict) - observed live: a real
+    run passed a dict here, and `int(a_dict)` raises TypeError, which
+    crashes the whole graph run since nothing upstream catches it. If given
+    a dict, sum its numeric values as a best-effort recovery (still counts
+    the images) rather than crashing or silently discarding the entry
+    entirely; anything else uncoercible becomes 0.
+    """
+    if isinstance(image_count, dict):
+        return sum(v for v in image_count.values() if isinstance(v, (int, float)))
+    if isinstance(image_count, (int, float)):
+        return int(image_count)
+    if isinstance(image_count, str):
+        try:
+            return int(float(image_count))
+        except ValueError:
+            return 0
+    return 0
 
 
 @tool
@@ -80,7 +104,7 @@ def append_sources(new_sources: list[dict], sources_json_path: str = "/workspace
     coverage: dict[str, int] = {}
     for entry in existing:
         for cls in entry.get("classes_covered", []):
-            coverage[cls] = coverage.get(cls, 0) + int(entry.get("image_count") or 0)
+            coverage[cls] = coverage.get(cls, 0) + _as_total_images(entry.get("image_count"))
 
     summary_lines = [
         f"sources.json: {added} added, {updated} updated, {len(existing)} total.",

@@ -35,9 +35,19 @@ from tools.model_builder import build_model
 # a real run turns out to need one of them; this allowlist is deliberately
 # the minimum first guess, not a final answer - re-tune it once dataset-agent
 # has actually run against real Roboflow projects a few times.
+#
+# `async_tasks_get` was missing here originally and is NOT optional:
+# `projects_fork` is an async operation that only returns a `taskId` - the
+# fork isn't actually done until polling `async_tasks_get(task_id=...)`
+# returns a terminal status ("completed"/"failed"). Without this tool bound,
+# dataset-agent has no way to ever confirm a fork finished, which is exactly
+# what happened on a real live run: it found real Roboflow Universe sources
+# but reported it couldn't stage them, because the fetch chain was missing
+# a required step.
 _ROBOFLOW_TOOL_ALLOWLIST = {
     "universe_search",
     "projects_fork",
+    "async_tasks_get",
     "versions_generate",
     "versions_get",
     "versions_export",
@@ -98,10 +108,28 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             "re-fetching is unnecessary work that can also fail for URLs that were never "
             "meant to be fetched directly (a Roboflow Universe project page, for instance, "
             "is a browsable URL, not a download link). Only if a source's files are missing "
-            "should you use the Roboflow/Kaggle MCP tools to fetch them, or download_and_extract "
-            "for a genuine direct-download URL (e.g. a Roboflow export link or a Kaggle "
-            "direct-download URL) - and if fetching fails, say so plainly in your summary "
-            "rather than treating the source as unfixably blocked.\n\n"
+            "should you fetch them. For a Roboflow Universe source (found via "
+            "universe_search, not one you already own), the fetch chain is exactly this "
+            "sequence - none of these steps can be skipped or assumed:\n"
+            "  1. projects_fork(url=<the source's Universe URL>) - this is ASYNC and only "
+            "returns {taskId, url}, not a finished fork.\n"
+            "  2. async_tasks_get(task_id=taskId) - poll every ~5s until status is "
+            "'completed' (or 'failed', in which case report the failure and move on rather "
+            "than retrying indefinitely).\n"
+            "  3. versions_generate(project_id=...) using the forked project's id - omit "
+            "preprocessing/augmentation (accept its defaults) since you have no way to "
+            "confirm those choices with the user mid-run; note in your summary that "
+            "defaults were used so the orchestrator can flag it if that matters.\n"
+            "  4. versions_get(project_id, version_number) - poll until the version is "
+            "ready, not still generating.\n"
+            "  5. versions_export(project_id, version_number, export_format=\"yolov8\") - "
+            "check/trigger the export; once it returns a download URL, pass that directly "
+            "to download_and_extract(url=..., dest_dir=\"/workspace/sourced/<index>/\").\n"
+            "For a Kaggle source, use download_dataset or a direct-download URL with "
+            "download_and_extract instead - no fork/version chain applies there.\n"
+            "If any step fails or a required tool isn't available, say so plainly and "
+            "specifically in your summary (which step, what error) rather than treating "
+            "the source as vaguely blocked or silently giving up.\n\n"
             "Once every mergeable source is staged, call merge_and_split_dataset once - call "
             "it with no path arguments (sources_json_path/sourced_dir/output_dir/"
             "class_budget_path) unless you have a real reason to override a default; its "

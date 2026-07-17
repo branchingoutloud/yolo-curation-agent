@@ -23,9 +23,11 @@ needed.
 import asyncio
 import os
 import threading
+import time
 
 from langchain.chat_models import init_chat_model
 from langchain_ollama import ChatOllama
+from ollama import ResponseError
 
 # The free-tier Ollama Cloud key this project is using allows only ONE
 # in-flight cloud call at a time - a second concurrent call errors rather
@@ -39,33 +41,88 @@ from langchain_ollama import ChatOllama
 _CLOUD_CALL_LOCK = threading.Lock()
 _CLOUD_CALL_ASYNC_LOCK = asyncio.Lock()
 
+# Observed live (twice): Ollama Cloud occasionally returns a transient
+# `ollama._types.ResponseError` with status 500 on an otherwise-valid
+# request - not something our code can prevent, but retrying once or twice
+# is worth it since one blip otherwise kills the entire orchestrator run
+# (an uncaught exception from the model node crashes the graph same as an
+# uncaught exception from a tool - see the ValueError-crash story in
+# tools/dataset_builder.py's history for the same underlying lesson).
+# Client-error status codes (4xx - bad model name, bad auth) are NOT
+# retried; retrying those just wastes the retry budget on something that
+# will never succeed.
+_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+_BACKOFF_SECONDS = 2
+
+
+def _is_retryable(exc: Exception) -> bool:
+    return isinstance(exc, ResponseError) and exc.status_code in _RETRYABLE_STATUS_CODES
+
 
 class _ThrottledCloudChatOllama(ChatOllama):
-    """ChatOllama that serializes every call behind the shared cloud lock.
+    """ChatOllama that serializes every call behind the shared cloud lock and
+    retries transient 5xx errors.
 
     Covers all four entry points BaseChatModel funnels invoke/ainvoke/stream/
     astream through. Sync and async calls are only serialized against calls
     of the same kind (separate locks) - acceptable here since real usage is
     either the fully-async langgraph server or a single standalone test
     script, never both against the same key at once.
+
+    The streaming variants only retry if nothing has been yielded yet in the
+    failing attempt - once a caller has received a partial chunk there's no
+    safe way to "undo" it, so a mid-stream failure past the first chunk still
+    raises rather than risking duplicated/garbled output.
     """
 
     def _generate(self, *args, **kwargs):
         with _CLOUD_CALL_LOCK:
-            return super()._generate(*args, **kwargs)
+            for attempt in range(_MAX_ATTEMPTS):
+                try:
+                    return super()._generate(*args, **kwargs)
+                except Exception as exc:
+                    if attempt == _MAX_ATTEMPTS - 1 or not _is_retryable(exc):
+                        raise
+                    time.sleep(_BACKOFF_SECONDS * (attempt + 1))
 
     def _stream(self, *args, **kwargs):
         with _CLOUD_CALL_LOCK:
-            yield from super()._stream(*args, **kwargs)
+            for attempt in range(_MAX_ATTEMPTS):
+                yielded_any = False
+                try:
+                    for chunk in super()._stream(*args, **kwargs):
+                        yielded_any = True
+                        yield chunk
+                    return
+                except Exception as exc:
+                    if yielded_any or attempt == _MAX_ATTEMPTS - 1 or not _is_retryable(exc):
+                        raise
+                    time.sleep(_BACKOFF_SECONDS * (attempt + 1))
 
     async def _agenerate(self, *args, **kwargs):
         async with _CLOUD_CALL_ASYNC_LOCK:
-            return await super()._agenerate(*args, **kwargs)
+            for attempt in range(_MAX_ATTEMPTS):
+                try:
+                    return await super()._agenerate(*args, **kwargs)
+                except Exception as exc:
+                    if attempt == _MAX_ATTEMPTS - 1 or not _is_retryable(exc):
+                        raise
+                    await asyncio.sleep(_BACKOFF_SECONDS * (attempt + 1))
 
     async def _astream(self, *args, **kwargs):
         async with _CLOUD_CALL_ASYNC_LOCK:
-            async for chunk in super()._astream(*args, **kwargs):
-                yield chunk
+            for attempt in range(_MAX_ATTEMPTS):
+                yielded_any = False
+                try:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        yielded_any = True
+                        yield chunk
+                    return
+                except Exception as exc:
+                    if yielded_any or attempt == _MAX_ATTEMPTS - 1 or not _is_retryable(exc):
+                        raise
+                    await asyncio.sleep(_BACKOFF_SECONDS * (attempt + 1))
 
 
 # Confirmed against the installed langchain-ollama version (chat_models.py):
