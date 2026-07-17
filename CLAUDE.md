@@ -85,6 +85,16 @@ check_ollama.py` is the preflight check — confirms the key/base_url reach the 
 and that the configured model actually responds, before spending several agent
 turns on a connection/auth/404 that would otherwise only surface mid-run.
 
+`_ThrottledCloudChatOllama` also retries transient `ollama._types.ResponseError`
+5xx responses (up to 3 attempts, short backoff) — observed live, twice, on this
+free-tier key with an otherwise-valid request; an uncaught exception from the
+model node crashes the whole graph exactly like an uncaught exception from a
+`@tool` does (see the dataset-agent path-argument story below), so one transient
+blip used to kill an entire orchestrator run through gate 2. 4xx errors (bad
+model name, bad auth) are deliberately NOT retried — those never succeed on
+retry. Streaming retries only kick in if nothing has been yielded yet in that
+attempt, to avoid duplicating output on a genuine mid-stream failure.
+
 HuggingFace is a documented but unwired fallback: any `*_AGENT_MODEL` can be
 pointed at `"huggingface:<repo_id>"` the moment `langchain-huggingface` is added
 to `pyproject.toml` and a real `HUGGINGFACEHUB_API_TOKEN` exists — useful if the
@@ -201,14 +211,23 @@ eval. `annotation-agent` exists in the codebase but is not currently wired in �
   verified correct by direct invocation before ever spending a model call on it (see
   Testing below) — don't conflate "the live run didn't complete" (no longer true) with "the
   code doesn't work" (was never true).
-- **training-agent** — picks model size, meant to run `ultralytics` training via
-  `execute()` in a GPU sandbox; writes `runs/train/status.md` (progress) and
-  `runs/train/metrics.json`. See Known stubs — its sandbox wiring currently does nothing.
-- **eval-agent** — meant to reuse the training sandbox (weights already local there),
-  build a confusion matrix via `supervision`, diagnose *why* each weak class underperforms
-  (not just which metric is low), write `eval_report.md` + `weak_classes.json`. Deliberately
-  does **not** decide the next action — that's the orchestrator's call. Same sandbox caveat
-  as training-agent.
+- **training-agent** — picks model size, runs `ultralytics` training via `execute()` in a
+  real GPU sandbox (Modal); writes `runs/train/status.md` (progress) and
+  `runs/train/metrics.json`. Built via `subagents/sandbox_subagent.py`'s
+  `build_sandbox_subagent()` as its own independently-compiled agent with
+  `training_sandbox_backend` as its backend — not a declarative `SubAgent`, since
+  deepagents' shared-backend limitation (see Known stubs) makes that path inert for GPU
+  work. `dataset/` and `model_choice.json` are copied into the sandbox before it runs;
+  `runs/train/status.md`/`metrics.json` are copied back to real disk after (even on
+  failure). Verified by inspection that its inner graph has a real `execute` tool bound
+  — **not yet verified via an actual live GPU training run** (real Modal cost/time).
+- **eval-agent** — reuses the training sandbox (same `ModalSandbox` singleton, so trained
+  weights are already local there — no re-upload needed), builds a confusion matrix via
+  `supervision`, diagnoses *why* each weak class underperforms (not just which metric is
+  low), writes `eval_report.md` + `weak_classes.json` back to real disk. Deliberately does
+  **not** decide the next action — that's the orchestrator's call. Same
+  `build_sandbox_subagent()` construction and same "not yet live-verified" caveat as
+  training-agent.
 
 Subagents coordinate purely through files on the shared filesystem backend, not through
 return values or shared state — always read the upstream JSON/markdown file rather than
@@ -241,8 +260,14 @@ instead of a subagent's `system_prompt` — that's the intended single source of
   spun up per call. Don't change that to per-call sandbox creation without updating the
   `atexit` teardown logic too.
 
-  **⚠ These sandboxes are currently not actually wired to anything** — see Known stubs
-  below before assuming `training-agent`/`eval-agent` can run `execute()` at all.
+  **Now genuinely wired to training-agent/eval-agent** via
+  `subagents/sandbox_subagent.py` (see Known stubs below for the full story) — the two
+  subagents that need GPU compute are built as their own independent
+  `create_deep_agent(backend=training_sandbox_backend, ...)` graphs instead of declarative
+  `SubAgent` dicts, since deepagents==0.6.12 only ever applies a `SubAgent`'s `"backend"`
+  key from the ORCHESTRATOR's shared `create_deep_agent` call, never a per-subagent one.
+  `annotation_sandbox_backend` remains unused (`annotation-agent` isn't in the active
+  roster).
 
 `ultralytics`/`supervision` are intentionally **not** in `pyproject.toml` dependencies —
 they only ever run inside the Modal sandbox image, never imported by the local
@@ -325,28 +350,73 @@ orchestrator/HITL-gate layer, so it's a faithful proxy for the real thing.
 Check these before assuming a code path is fully wired:
 
 - **Per-subagent `"backend"` overrides do nothing in the installed `deepagents` version
-  (0.6.12).** `SubAgent` (see `.venv/.../deepagents/middleware/subagents.py`) has no
-  `backend` field, and `create_deep_agent`'s subagent-building loop (`graph.py`) always
-  binds every subagent's `FilesystemMiddleware` to the single `backend=` passed to
-  `create_deep_agent` itself — never anything from an individual subagent's spec dict.
-  `annotation.py`/`training.py`/`eval.py` still pass `"backend": sandbox_backend` in their
-  returned dicts; it's silently ignored (Python dicts don't enforce `TypedDict` shape at
-  runtime). Consequence: **every subagent, including training-agent and eval-agent, only
-  ever sees `project_backend`** — a `CompositeBackend(StateBackend, FilesystemBackend)`,
-  neither of which implements `SandboxBackendProtocol`. `FilesystemMiddleware` only adds
-  an `execute` tool when the backend supports it (`filesystem.py`'s `_supports_execution`
-  check), so **no subagent currently has an `execute` tool at all**, regardless of the
-  `sandbox_backend` argument threaded into `build_annotation_agent`/`build_training_agent`/
-  `build_eval_agent`. Fixing this needs an actual architecture change (e.g. a real
-  per-subagent backend mechanism, or passing a sandbox as the top-level `backend=` — which
-  would then apply to every subagent, not just the ones that need GPU) — don't assume it's
-  a config typo. `dataset-agent` sidesteps this entirely: its merge/dedupe/split work is
-  plain Python (`tools/dataset_builder.py`) that runs directly in the orchestrator process,
-  no sandbox needed, since it's CPU-bound file/image work, not GPU training.
+  (0.6.12) — FIXED for training-agent/eval-agent via `subagents/sandbox_subagent.py`.**
+  `SubAgent` (see `.venv/.../deepagents/middleware/subagents.py`) has no `backend` field,
+  and `create_deep_agent`'s subagent-building loop (`graph.py`) always binds every
+  declarative `SubAgent`'s `FilesystemMiddleware` to the single `backend=` passed to
+  `create_deep_agent` itself — never anything from an individual subagent's spec dict. A
+  plain `"backend": sandbox_backend` key in a `SubAgent` dict is silently ignored (Python
+  dicts don't enforce `TypedDict` shape at runtime) — that's what `annotation.py` still
+  does (moot; not in the active roster) and what `training.py`/`eval.py` used to do.
+  **The real fix**: `subagents/sandbox_subagent.py`'s `build_sandbox_subagent()` builds
+  training-agent/eval-agent as their own, separately-compiled
+  `create_deep_agent(backend=sandbox_backend, ...)` graphs, then wraps each as a
+  `CompiledSubAgent` (`{"name", "description", "runnable"}` — a different, less-common
+  `deepagents` subagent shape than the declarative `SubAgent` dict every other subagent
+  uses). Per `graph.py`'s subagent-building loop, `CompiledSubAgent` entries are used
+  AS-IS, never rebuilt against the orchestrator's shared `backend=` — this is what lets
+  them have a real, independent backend at all. Verified by direct inspection (not a live
+  run): building `create_deep_agent(backend=training_sandbox_backend, ...)` and walking
+  its compiled graph's `tools` node shows `execute` genuinely bound, alongside the usual
+  `ls`/`read_file`/`write_file`/`edit_file`/`glob`/`grep` — confirms the wiring, not just
+  the intent.
+  The catch this introduces: a subagent with its OWN backend has filesystem tools that
+  operate against THAT backend's filesystem, not `project_backend`'s real disk — so
+  whatever the orchestrator/dataset-agent already wrote (`dataset/`, `model_choice.json`)
+  is invisible to it unless copied in first, and whatever it writes back
+  (`runs/train/status.md`, `metrics.json`) is invisible to the orchestrator/eval-agent
+  afterward unless copied out. `build_sandbox_subagent()`'s `upload_paths`/`download_paths`
+  do exactly that via the sandbox's own `upload_files()`/`download_files()`
+  (`backends/sandboxes.py`), bracketing one inner-agent invocation — same `/workspace/...`
+  absolute-path convention on both sides, so a path string means the same thing whether it
+  resolves to real disk or the sandbox's container filesystem. eval-agent has no
+  `upload_paths`: it's passed the SAME `training_sandbox_backend` singleton instance as
+  training-agent (see `agent.py`), so the dataset/weights training-agent already staged
+  there are still present — re-uploading would be redundant, matching the pre-existing
+  "eval-agent reuses the training sandbox" design intent.
+  One more gotcha this surfaced: a `CompiledSubAgent`'s inner `create_deep_agent(...)` is
+  its own independent call, NOT a declarative `SubAgent` inside the orchestrator's shared
+  list — so it does NOT automatically inherit `ORCHESTRATOR_MODEL` the way deepagents' own
+  `spec.get("model", model)` mechanism does for every other subagent. Both
+  `subagents/training.py` and `subagents/eval.py` now resolve their model explicitly
+  (`TRAINING_AGENT_MODEL`/`EVAL_AGENT_MODEL`, falling back to `ORCHESTRATOR_MODEL`) before
+  building their inner agent — omitting this silently fell back to deepagents' own
+  built-in default (Anthropic) and threw a deprecation warning (`Passing model=None to
+  create_deep_agent is deprecated`) until fixed.
+  A live orchestrator run reaching training-agent surfaced one more real bug:
+  `blockbuster.blockbuster.BlockingError: Blocking call to os.getcwd` — `_run`'s upload/
+  download bridge in `sandbox_subagent.py` called blocking synchronous code (real-disk
+  file I/O via `workspace_path()`/`Path.resolve()`, plus `modal`'s synchronous SDK calls)
+  directly inside an async function; `langgraph dev`'s blockbuster middleware correctly
+  flags any bare blocking call made straight in the event loop. Fixed by wrapping both the
+  upload and download steps in `asyncio.to_thread(...)` (blockbuster's own suggested fix).
+  Verified with a fake sandbox backend (no real Modal cost) that the bridge still collects/
+  uploads/downloads the right paths and content under this threaded wrapping.
+  **Not yet exercised against a real Modal GPU run** — spinning up a real sandbox costs
+  real money/time, deliberately not triggered without an explicit go-ahead. This backend is
+  written to be provider-agnostic: `deepagents` also ships a `LangSmithSandbox`
+  (`deepagents/backends/langsmith.py`, wraps `langsmith.sandbox.Sandbox`) implementing the
+  same `SandboxBackendProtocol` — if that's available/preferred later, swap the
+  `sandbox_backend` instance passed to `build_training_agent`/`build_eval_agent`; nothing
+  in `sandbox_subagent.py` is Modal-specific.
+  `dataset-agent` never needed any of this: its merge/dedupe/split work is plain Python
+  (`tools/dataset_builder.py`) that runs directly in the orchestrator process, no sandbox
+  needed, since it's CPU-bound file/image work, not GPU training.
 - `tools/zero_shot_annotate.py` — the actual zero-shot detector call (YOLO-World /
   Grounding DINO) is unimplemented and raises `NotImplementedError`. Moot while
-  `annotation-agent` is excluded from the active roster, but fix this (and the backend
-  issue above) before re-enabling it.
+  `annotation-agent` is excluded from the active roster; if re-enabled, it would need the
+  same `build_sandbox_subagent()` treatment as training-agent/eval-agent, not the inert
+  `"backend"` dict key it still uses.
 - Roboflow/Kaggle MCP server URLs/credentials, Modal auth, and the Ollama Cloud key
   (`OLLAMA_API_KEY`/`OLLAMA_BASE_URL`, shared by every subagent via `tools/model_builder.py`
   — see Model wiring above) are expected to be filled into `.env` per-deployment. Note the
@@ -359,13 +429,31 @@ Check these before assuming a code path is fully wired:
   `KAGGLE_MCP_URL` was actually tried. `KAGGLE_API_KEY` (optional, sent as a Bearer header
   like Roboflow's) is wired in `mcp_clients.py` but unverified — tool *listing* works
   without it; whether tool *calls* need it is untested.
-- `training-agent`'s `ultralytics` invocation exists only as system-prompt instructions
-  relying on the model + `execute()` sandbox to carry it out — and per the backend issue
-  above, there's currently no `execute` tool for it to call at all, so this cannot
-  function yet even as a prompted-only stub.
+- `training-agent`'s `ultralytics` invocation is still only system-prompt instructions
+  relying on the model to run the right `yolo detect train ...` command via `execute()` -
+  no code parses/validates its output the way `tools/dataset_builder.py` does for
+  dataset-agent. It now genuinely HAS a working `execute()` tool (see the backend-override
+  fix above), so this is no longer blocked at the wiring level - what's untested is an
+  actual live GPU run (real Modal cost/time - not triggered without explicit go-ahead) and
+  whether the model reliably produces `runs/train/metrics.json` in a shape eval-agent can
+  parse.
 - `dataset-agent`'s merge/dedupe/split step (this is the one actually implemented — see
   the Subagent pipeline section above) still assumes each source's raw files land under
   `/workspace/sourced/<index>/` in a specific shape (`images/`, `labels/`, `classes.txt`);
   dataset-agent's system prompt instructs it to stage sources there itself via MCP
-  tools/`download_and_extract`, but that hasn't been exercised against a real Roboflow/
-  Kaggle credential yet.
+  tools/`download_and_extract`. **Now exercised against real Roboflow Universe sources
+  via the full orchestrator + UI flow**, which surfaced a real gap since fixed: fetching a
+  Roboflow Universe source is a 5-step async chain (`projects_fork` → poll
+  `async_tasks_get` → `versions_generate` → poll `versions_get` → `versions_export` →
+  `download_and_extract` on the resulting URL) — `subagents/dataset.py`'s
+  `_ROBOFLOW_TOOL_ALLOWLIST` was missing `async_tasks_get` entirely (so `projects_fork`'s
+  async task, which only returns a `taskId`, could never be confirmed complete), and the
+  system prompt only said "use the Roboflow/Kaggle MCP tools" without spelling out the
+  sequence. Both fixed: `async_tasks_get` added to the allowlist, and the prompt now
+  states the exact 5-step chain (including accepting `versions_generate`'s default
+  preprocessing/augmentation, since dataset-agent has no way to pause and confirm those
+  choices with the user mid-run — only the orchestrator's three gates do that). Not yet
+  re-verified against a real fork/export end-to-end (Roboflow's own async processing can
+  take real wall-clock time) — if a run still reports a stage as blocked after this fix,
+  check *which* step failed (the summary should now say) rather than assuming the same
+  root cause.

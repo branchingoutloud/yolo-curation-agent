@@ -1,0 +1,20 @@
+{
+  "classes": [
+    "forklift",
+    "pedestrian"
+  ],
+  "budgets": {
+    "forklift": 2000,
+    "pedestrian": 4000
+  },
+  "variability": {
+    "forklift": "high",
+    "pedestrian": "very_high"
+  },
+  "split_ratios": {
+    "test": 0.1,
+    "train": 0.7,
+    "val": 0.2
+  },
+  "notes": "Near real\u2011time detection for warehouse safety. Balanced representation to avoid bias."
+}
