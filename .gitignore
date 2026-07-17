@@ -14,9 +14,14 @@ dist/
 # langgraph
 .langgraph_api/
 
-# run artifacts (regenerated per run; keep the directory tracked, not its contents)
+# run artifacts (regenerated per run; keep the default dir tracked, not its contents)
 run_artifacts/*
 !run_artifacts/.gitkeep
+
+# every scripts/test_*.py harness writes to its own isolated run_artifacts_<name>/
+# directory (run_artifacts_test/, run_artifacts_real_test/, run_artifacts_kangaroo/,
+# etc.) - none of these should ever be committed, they're wiped/reseeded per run
+run_artifacts_*/
 
 # model weights / large training outputs
 *.pt

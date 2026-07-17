@@ -140,27 +140,28 @@ def _load_sources(sources_json_path: str) -> list[dict]:
 
 
 @tool
-def select_primary_source(sources_json_path: str = "/workspace/sources.json") -> str:
-    """Pick the single mergeable source with the highest image_count.
+def list_qualifying_sources(sources_json_path: str = "/workspace/sources.json") -> str:
+    """List every source mergeable right now, so all of them get fetched/merged.
 
     Filters sources_json_path down to entries with status == "available" and
     annotation_format == "YOLO" (the same filter merge_and_split_dataset
-    applies), and returns the one with the largest image_count as the sole
-    dataset to fetch/stage/train on - real arithmetic over the file, not a
-    count the calling agent has to eyeball itself across a long sources.json.
+    applies) - real filtering over the file, not something the calling agent
+    has to eyeball itself across a long sources.json.
 
-    Returns a plain-text description of the chosen source (its 0-based index,
-    source, dataset_id, url, image_count) or a plain-text explanation if no
-    entry currently qualifies. Only fetch/stage the returned index's files
-    under sourced_dir/<index>/ - leave every other source unfetched, so
-    merge_and_split_dataset naturally builds the dataset from this one source
-    alone (it skips anything not staged rather than erroring).
+    Returns a plain-text list of every qualifying source (its 0-based index,
+    source, dataset_id, url, image_count), largest-first, or a plain-text
+    explanation if none currently qualify. Fetch/stage EVERY listed index
+    under sourced_dir/<index>/ - merge_and_split_dataset merges whatever is
+    staged across all of them (deduping near-identical images and
+    re-splitting the combined pool), and skips anything left unstaged rather
+    than erroring, so skipping a qualifying source just means a smaller
+    merged dataset, not a failure.
     """
-    logger.info("select_primary_source: reading %s", sources_json_path)
+    logger.info("list_qualifying_sources: reading %s", sources_json_path)
     try:
         sources = _load_sources(sources_json_path)
     except (ValueError, FileNotFoundError) as exc:
-        logger.error("select_primary_source: failed to load sources: %s", exc)
+        logger.error("list_qualifying_sources: failed to load sources: %s", exc)
         return f"Error: {exc}"
 
     candidates = [
@@ -169,32 +170,36 @@ def select_primary_source(sources_json_path: str = "/workspace/sources.json") ->
         if source.get("status") == "available"
         and str(source.get("annotation_format", "")).strip().lower() == "yolo"
     ]
-    logger.info("select_primary_source: %d total sources, %d qualify (available + YOLO)", len(sources), len(candidates))
+    logger.info("list_qualifying_sources: %d total sources, %d qualify (available + YOLO)", len(sources), len(candidates))
     for i, src in enumerate(sources):
         logger.debug(
             "  source[%d]: id=%s status=%s format=%s image_count=%s",
             i, src.get('dataset_id'), src.get('status'), src.get('annotation_format'), src.get('image_count'),
         )
     if not candidates:
-        logger.warning("select_primary_source: no qualifying candidates found")
+        logger.warning("list_qualifying_sources: no qualifying candidates found")
         return (
             "No source currently qualifies (need status == 'available' and "
-            "annotation_format == 'YOLO'). Nothing to select - report this back "
+            "annotation_format == 'YOLO'). Nothing to fetch - report this back "
             "rather than fetching anything."
         )
 
-    best_index, best_source = max(candidates, key=lambda pair: pair[1].get("image_count", 0) or 0)
+    candidates.sort(key=lambda pair: pair[1].get("image_count", 0) or 0, reverse=True)
     logger.info(
-        "select_primary_source: SELECTED index=%d id=%s image_count=%s (best of %d)",
-        best_index, best_source.get('dataset_id'), best_source.get('image_count'), len(candidates),
+        "list_qualifying_sources: %d qualifying source(s): indices=%s",
+        len(candidates), [i for i, _ in candidates],
     )
-    return (
-        f"Selected index {best_index}: source={best_source.get('source')!r} "
-        f"dataset_id={best_source.get('dataset_id')!r} url={best_source.get('url')!r} "
-        f"image_count={best_source.get('image_count')!r} classes_covered={best_source.get('classes_covered')!r}. "
-        f"Fetch/stage only this index's files under sourced_dir/{best_index}/, then call "
-        f"merge_and_split_dataset - do not stage any other source."
-    )
+    lines = [
+        f"{len(candidates)} qualifying source(s) - fetch/stage EVERY index below, "
+        "then call merge_and_split_dataset once:"
+    ]
+    for i, source in candidates:
+        lines.append(
+            f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
+            f"url={source.get('url')!r} image_count={source.get('image_count')!r} "
+            f"classes_covered={source.get('classes_covered')!r}"
+        )
+    return "\n".join(lines)
 
 
 def _canonical_class_list(class_budget_path: str, sources: list[dict]) -> list[str]:

@@ -127,6 +127,7 @@ ORCHESTRATOR_MODEL_SPEC = os.environ.get("ORCHESTRATOR_MODEL", "anthropic:claude
 USER_PROMPT = "I want to train a YOLO model for identifying a kangaroo."
 
 MAX_GATES = 5
+MAX_NUDGES = 3
 
 
 async def main(roboflow_tools: list, kaggle_tools: list, web_search_tools: list) -> None:
@@ -165,25 +166,48 @@ async def main(roboflow_tools: list, kaggle_tools: list, web_search_tools: list)
     result = await full_agent.ainvoke(inputs, config=config)
 
     gate_num = 0
-    while "__interrupt__" in result and gate_num < MAX_GATES:
-        gate_num += 1
-        interrupt_obj = result["__interrupt__"][0]
-        payload = interrupt_obj.value
-        action_requests = payload.get("action_requests", [])
+    nudges = 0
+    stopped_at_later_gate = False
 
-        print(f"\n=== APPROVAL GATE {gate_num} ===")
-        for ar in action_requests:
-            print(f"  tool: {ar.get('name')}")
-            print(f"  args: {ar.get('args')}")
-            print(f"  description: {ar.get('description', '')}")
+    while True:
+        while "__interrupt__" in result and gate_num < MAX_GATES:
+            gate_num += 1
+            interrupt_obj = result["__interrupt__"][0]
+            payload = interrupt_obj.value
+            action_requests = payload.get("action_requests", [])
 
-        if gate_num == 1:
-            print(">>> auto-approving gate 1 (sourcing/data plan) to proceed into dataset-agent\n")
-            decisions = [{"type": "approve"} for _ in action_requests]
-            result = await full_agent.ainvoke(Command(resume={"decisions": decisions}), config=config)
-        else:
-            print(f">>> stopping here at gate {gate_num} - test scope is 'through dataset build only', not training\n")
+            print(f"\n=== APPROVAL GATE {gate_num} ===")
+            for ar in action_requests:
+                print(f"  tool: {ar.get('name')}")
+                print(f"  args: {ar.get('args')}")
+                print(f"  description: {ar.get('description', '')}")
+
+            if gate_num == 1:
+                print(">>> auto-approving gate 1 (sourcing/data plan) to proceed into dataset-agent\n")
+                decisions = [{"type": "approve"} for _ in action_requests]
+                result = await full_agent.ainvoke(Command(resume={"decisions": decisions}), config=config)
+            else:
+                print(f">>> stopping here at gate {gate_num} - test scope is 'through dataset build only', not training\n")
+                stopped_at_later_gate = True
+                break
+
+        if stopped_at_later_gate or "__interrupt__" in result:
             break
+
+        # No interrupt pending - either genuinely done, or the model answered
+        # in plain prose instead of proceeding/calling request_approval again
+        # (observed live: gpt-oss:120b sometimes re-confirms in words rather
+        # than delegating). Nudge forward a few times before giving up,
+        # mirroring what a human clicking through the real UI would just
+        # answer, rather than treating hesitation as a hard failure.
+        if (_TEST_WORKSPACE / "dataset").exists() or nudges >= MAX_NUDGES:
+            break
+        nudges += 1
+        print(f"\n>>> No interrupt and no dataset/ yet - orchestrator said:\n{result['messages'][-1].content}\n")
+        print(f">>> Nudging forward ({nudges}/{MAX_NUDGES}): 'Yes, please proceed.'\n")
+        result = await full_agent.ainvoke(
+            {"messages": [HumanMessage(content="Yes, please proceed.")]}, config=config
+        )
 
     print("\n=== FINAL MESSAGE ===")
     if "__interrupt__" in result:
