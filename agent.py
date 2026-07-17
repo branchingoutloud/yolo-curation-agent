@@ -12,7 +12,6 @@ from pathlib import Path
 from deepagents import create_deep_agent
 
 from backends.project_backend import project_backend
-from backends.sandboxes import training_sandbox_backend
 from subagents.dataset import build_dataset_agent
 from subagents.eval import build_eval_agent
 from subagents.planning import build_planning_agent
@@ -75,8 +74,8 @@ def build_agent():
         build_planning_agent(),
         build_sourcing_agent(roboflow_tools, kaggle_tools, web_search_tools),
         build_dataset_agent(roboflow_tools, kaggle_tools),
-        build_training_agent(training_sandbox_backend),
-        build_eval_agent(training_sandbox_backend),
+        build_training_agent(),
+        build_eval_agent(),
     ]
 
     # build_model resolves "ollama:..." through the shared Ollama-Cloud-aware

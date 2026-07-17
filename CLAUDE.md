@@ -201,14 +201,22 @@ eval. `annotation-agent` exists in the codebase but is not currently wired in �
   verified correct by direct invocation before ever spending a model call on it (see
   Testing below) — don't conflate "the live run didn't complete" (no longer true) with "the
   code doesn't work" (was never true).
-- **training-agent** — picks model size, meant to run `ultralytics` training via
-  `execute()` in a GPU sandbox; writes `runs/train/status.md` (progress) and
-  `runs/train/metrics.json`. See Known stubs — its sandbox wiring currently does nothing.
-- **eval-agent** — meant to reuse the training sandbox (weights already local there),
-  build a confusion matrix via `supervision`, diagnose *why* each weak class underperforms
-  (not just which metric is low), write `eval_report.md` + `weak_classes.json`. Deliberately
-  does **not** decide the next action — that's the orchestrator's call. Same sandbox caveat
-  as training-agent.
+- **training-agent** — picks a model size (per the yolo-model-selection skill), then calls
+  the custom `run_training` tool (`tools/training_runner.py`) once — real Python, not a
+  prompted `execute()`. `run_training` shells out to the official `ultralytics` Docker image
+  on the local GPU (`tools/gpu_exec.py` → `docker run --gpus all`, driver in
+  `tools/gpu_drivers/train_driver.py`), which does the real torch training and writes
+  `runs/train/metrics.json` + `weights/best.pt`; the tool reads that back and returns a
+  short summary. `tools=[run_training]`, no `"backend"` key — this is how it sidesteps the
+  inert per-subagent-backend limitation (see Known stubs), the same pattern as dataset-agent.
+  **Wired but not yet verified live** — needs a run on a GPU host with Docker + the NVIDIA
+  Container Toolkit (see `scripts/test_training_runner.py`).
+- **eval-agent** — calls the custom `run_eval` tool (`tools/eval_runner.py`) once, which runs
+  ultralytics validation in the same GPU Docker image (`tools/gpu_drivers/eval_driver.py`):
+  per-class mAP50/mAP50-95, a confusion matrix, per-class train/val box counts, and a
+  heuristic likely-cause per weak class; writes `eval_report.md` + `weak_classes.json`
+  itself. Deliberately does **not** decide the next action — that's the orchestrator's call.
+  Same "wired but verify on a GPU host" caveat as training-agent.
 
 Subagents coordinate purely through files on the shared filesystem backend, not through
 return values or shared state — always read the upstream JSON/markdown file rather than
@@ -241,12 +249,20 @@ instead of a subagent's `system_prompt` — that's the intended single source of
   spun up per call. Don't change that to per-call sandbox creation without updating the
   `atexit` teardown logic too.
 
-  **⚠ These sandboxes are currently not actually wired to anything** — see Known stubs
-  below before assuming `training-agent`/`eval-agent` can run `execute()` at all.
+  **⚠ `ModalSandbox` is legacy / not on the active training path.** The active
+  training/eval path does not use these `BaseSandbox` singletons at all — it uses the
+  local-GPU Docker runner (`tools/gpu_exec.py` + `tools/gpu_drivers/`), which shells out
+  to `docker run --gpus all` directly and never touches deepagents' sandbox/`execute`
+  machinery. `ModalSandbox` stays in the tree as a GPU alternative for whoever wants to
+  point the runner at Modal instead of local Docker; wire it into `gpu_exec.py` if so.
 
 `ultralytics`/`supervision` are intentionally **not** in `pyproject.toml` dependencies —
-they only ever run inside the Modal sandbox image, never imported by the local
-orchestrator process. Don't add them to local deps "for convenience"; it defeats the
+they only ever run inside the GPU Docker image (`ultralytics/ultralytics:latest`), never
+imported by the local orchestrator process. The `run_training`/`run_eval` tools and their
+driver scripts are split precisely so the orchestrator side imports only stdlib +
+`langchain_core` (it just builds a `docker run` argv), while the torch/ultralytics code
+lives in `tools/gpu_drivers/*.py`, executed only inside the container. Don't add them to
+local deps "for convenience"; it defeats the
 point of keeping torch out of the orchestrator's venv.
 
 ## Testing (`scripts/`)
@@ -329,20 +345,21 @@ Check these before assuming a code path is fully wired:
   `backend` field, and `create_deep_agent`'s subagent-building loop (`graph.py`) always
   binds every subagent's `FilesystemMiddleware` to the single `backend=` passed to
   `create_deep_agent` itself — never anything from an individual subagent's spec dict.
-  `annotation.py`/`training.py`/`eval.py` still pass `"backend": sandbox_backend` in their
-  returned dicts; it's silently ignored (Python dicts don't enforce `TypedDict` shape at
-  runtime). Consequence: **every subagent, including training-agent and eval-agent, only
-  ever sees `project_backend`** — a `CompositeBackend(StateBackend, FilesystemBackend)`,
-  neither of which implements `SandboxBackendProtocol`. `FilesystemMiddleware` only adds
-  an `execute` tool when the backend supports it (`filesystem.py`'s `_supports_execution`
-  check), so **no subagent currently has an `execute` tool at all**, regardless of the
-  `sandbox_backend` argument threaded into `build_annotation_agent`/`build_training_agent`/
-  `build_eval_agent`. Fixing this needs an actual architecture change (e.g. a real
-  per-subagent backend mechanism, or passing a sandbox as the top-level `backend=` — which
-  would then apply to every subagent, not just the ones that need GPU) — don't assume it's
-  a config typo. `dataset-agent` sidesteps this entirely: its merge/dedupe/split work is
-  plain Python (`tools/dataset_builder.py`) that runs directly in the orchestrator process,
-  no sandbox needed, since it's CPU-bound file/image work, not GPU training.
+  `annotation.py` still passes `"backend": sandbox_backend` in its returned dict; it's
+  silently ignored (Python dicts don't enforce `TypedDict` shape at runtime). Consequence:
+  **every subagent only ever sees `project_backend`** — a `CompositeBackend(StateBackend,
+  FilesystemBackend)`, neither of which implements `SandboxBackendProtocol`.
+  `FilesystemMiddleware` only adds an `execute` tool when the backend supports it
+  (`filesystem.py`'s `_supports_execution` check), so **no subagent has an `execute` tool
+  at all**. **training-agent and eval-agent no longer depend on this** — they were
+  reworked (2026-07-17) to call the plain-Python `run_training`/`run_eval` tools, which
+  shell out to `docker run --gpus all` (`tools/gpu_exec.py` + `tools/gpu_drivers/`) instead
+  of needing a deepagents `execute` tool. That's the same escape hatch dataset-agent uses:
+  its merge/dedupe/split work is plain Python (`tools/dataset_builder.py`) in the
+  orchestrator process. So this limitation now only bites if you **re-enable
+  annotation-agent** (which still assumes an `execute`-capable sandbox it won't get) — fix
+  the backend mechanism, or convert annotation to the same shell-out-to-Docker tool pattern,
+  before doing that.
 - `tools/zero_shot_annotate.py` — the actual zero-shot detector call (YOLO-World /
   Grounding DINO) is unimplemented and raises `NotImplementedError`. Moot while
   `annotation-agent` is excluded from the active roster, but fix this (and the backend
@@ -359,10 +376,18 @@ Check these before assuming a code path is fully wired:
   `KAGGLE_MCP_URL` was actually tried. `KAGGLE_API_KEY` (optional, sent as a Bearer header
   like Roboflow's) is wired in `mcp_clients.py` but unverified — tool *listing* works
   without it; whether tool *calls* need it is untested.
-- `training-agent`'s `ultralytics` invocation exists only as system-prompt instructions
-  relying on the model + `execute()` sandbox to carry it out — and per the backend issue
-  above, there's currently no `execute` tool for it to call at all, so this cannot
-  function yet even as a prompted-only stub.
+- `training-agent`/`eval-agent`'s `ultralytics` work is now real code (`run_training`/
+  `run_eval` → `tools/gpu_exec.py` → `docker run --gpus all ultralytics/ultralytics:latest`),
+  **but has not been run live yet.** It requires the agent to run **on a host with an
+  NVIDIA GPU + Docker + the NVIDIA Container Toolkit** (verified target: an RTX 4090 box,
+  Ubuntu 24.04, Docker 29 with the `nvidia` runtime). Pull the image once
+  (`docker pull ultralytics/ultralytics:latest`) and verify with
+  `scripts/test_training_runner.py` (no-LLM: builds a tiny dataset, trains yolo11n 1 epoch,
+  evals) before trusting a full orchestrator run. The tool functions return plain-text
+  errors (they never raise) so a Docker/CUDA failure surfaces as a message, not a graph
+  crash — same convention as `dataset_builder.py`. Note: a hosted LangSmith sandbox was
+  evaluated as an alternative and rejected — `langsmith.sandbox`'s `create_sandbox` exposes
+  no GPU knob (CPU-only), so it can only prove wiring on a tiny demo, not train for real.
 - `dataset-agent`'s merge/dedupe/split step (this is the one actually implemented — see
   the Subagent pipeline section above) still assumes each source's raw files land under
   `/workspace/sourced/<index>/` in a specific shape (`images/`, `labels/`, `classes.txt`);
