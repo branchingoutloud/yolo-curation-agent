@@ -66,10 +66,23 @@ def main() -> None:
     names = _names_list(cfg)
     nc = len(names)
 
-    from ultralytics import YOLO
+    from ultralytics import YOLO, settings
+
+    # Keep every ultralytics write under the writable, user-owned bind mount -
+    # the image default runs_dir (/ultralytics/runs) is root-owned and we run as
+    # a non-root --user. See train_driver.py for the full explanation.
+    settings.update({"runs_dir": "/workspace/runs"})
 
     model = YOLO(str(_BEST))
-    metrics = model.val(data=str(resolved), imgsz=imgsz, device=device, split=split)
+    metrics = model.val(
+        data=str(resolved),
+        imgsz=imgsz,
+        device=device,
+        split=split,
+        project="/workspace/runs",
+        name="eval",
+        exist_ok=True,
+    )
     box = metrics.box
 
     ap50: dict[int, float] = {}

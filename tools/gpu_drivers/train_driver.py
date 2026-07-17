@@ -46,7 +46,14 @@ def main() -> None:
     )
     data = _resolve_data_yaml()
 
-    from ultralytics import YOLO
+    from ultralytics import YOLO, settings
+
+    # Force ultralytics to write ALL run outputs under the (writable, bind-
+    # mounted, user-owned) /workspace/runs. The image's default runs_dir is
+    # /ultralytics/runs, which is root-owned - and we run as a non-root --user,
+    # so any ultralytics call that falls back to the default (e.g. a .val()
+    # without an explicit project=) would hit PermissionError.
+    settings.update({"runs_dir": "/workspace/runs"})
 
     model = YOLO(f"{model_size}.pt")
     model.train(
@@ -65,7 +72,15 @@ def main() -> None:
     # Validate the BEST checkpoint (model still holds `last` after train()).
     best = _RUNS / "train" / "weights" / "best.pt"
     val_model = YOLO(str(best)) if best.exists() else model
-    metrics = val_model.val(data=data, imgsz=imgsz, device=device, split="val")
+    metrics = val_model.val(
+        data=data,
+        imgsz=imgsz,
+        device=device,
+        split="val",
+        project=str(_RUNS),
+        name="val",
+        exist_ok=True,
+    )
     box = metrics.box
 
     per_class: dict[str, dict[str, float]] = {}
