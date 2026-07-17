@@ -12,5 +12,6 @@ def build_annotation_agent(roboflow_tools: list, zero_shot_tools: list, sandbox_
             "and record results in annotation_manifest.json."
         ),
         "tools": [*roboflow_tools, *zero_shot_tools],
-        "backend": sandbox_backend,  # per-subagent sandbox override
+        # per-subagent sandbox override; omitted until one is configured
+        **({"backend": sandbox_backend} if sandbox_backend is not None else {}),
     }

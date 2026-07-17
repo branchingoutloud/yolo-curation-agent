@@ -29,3 +29,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["subagents", "tools", "backends"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
