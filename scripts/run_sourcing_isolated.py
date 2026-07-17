@@ -13,12 +13,18 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import shutil
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+# Windows' default console codepage (cp1252) can't encode the ✓/✗ marks or the
+# Unicode punctuation cloud models emit - same guard as every other scripts/
+# harness (see CLAUDE.md, Testing).
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
@@ -29,6 +35,7 @@ from langchain_core.tools import tool  # noqa: E402
 
 from backends.project_backend import RUN_ARTIFACTS_DIR, project_backend  # noqa: E402
 from subagents.sourcing import build_sourcing_agent  # noqa: E402
+from tools.model_builder import build_model  # noqa: E402
 from tools.sources_schema import (  # noqa: E402
     coverage_summary,
     find_duplicate_dataset_ids,
@@ -106,7 +113,11 @@ _MOCK_KAGGLE_HITS = [
 ]
 
 
-@tool
+# Mock tools carry the REAL tool names ("universe_search", "search_datasets")
+# because build_sourcing_agent filters its roboflow/kaggle tool lists through
+# name allowlists (subagents/sourcing.py) - a differently-named mock would be
+# silently dropped and the agent would run with no search tools at all.
+@tool("universe_search")
 def mock_roboflow_search(query: str) -> str:
     """Search Roboflow Universe for annotated object-detection datasets
     matching the query. Returns a JSON list of hits."""
@@ -116,7 +127,7 @@ def mock_roboflow_search(query: str) -> str:
     return json.dumps(hits, indent=2)
 
 
-@tool
+@tool("search_datasets")
 def mock_kaggle_search(query: str) -> str:
     """Search Kaggle for image datasets matching the query. Returns a JSON
     list of hits (may be unannotated raw image collections)."""
@@ -156,16 +167,27 @@ def build_standalone_agent(use_mock: bool):
             get_roboflow_tools(), get_kaggle_tools(), get_web_search_tools()
         )
 
-    print(f"[harness] search tools: {[t.name for t in spec['tools']] or 'NONE'}")
-    if not spec["tools"]:
+    # spec["tools"] always contains append_sources - only count *search* tools
+    # when deciding whether the agent has anything to search with.
+    search_tool_names = [t.name for t in spec["tools"] if t.name != "append_sources"]
+    print(f"[harness] search tools: {search_tool_names or 'NONE'}")
+    if not search_tool_names:
         sys.exit(
             "[harness] no search tools loaded - set ROBOFLOW_API_KEY / "
             "KAGGLE_MCP_URL / TAVILY_API_KEY in .env, or use --mock"
         )
 
-    model = os.environ.get("SOURCING_MODEL") or os.environ.get(
+    # Route through build_model() (CLAUDE.md, Model wiring) - a raw
+    # "ollama:..." string passed straight to create_deep_agent would skip the
+    # Ollama Cloud base_url/Bearer-auth wiring and fail against localhost.
+    model_spec = os.environ.get("SOURCING_AGENT_MODEL") or os.environ.get(
         "ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-5"
     )
+    if model_spec.startswith("anthropic:") and not os.environ.get("ANTHROPIC_API_KEY"):
+        sys.exit("[harness] ANTHROPIC_API_KEY is not set - add it to .env")
+    model = build_model(model_spec)
+    if model is None:
+        sys.exit(f"[harness] could not build a model from {model_spec!r} - check .env")
     return create_deep_agent(
         model=model,
         system_prompt=spec["system_prompt"],
@@ -216,18 +238,19 @@ def main() -> int:
     parser.add_argument("--fresh", action="store_true", help="delete any existing sources.json first")
     args = parser.parse_args()
 
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        sys.exit("[harness] ANTHROPIC_API_KEY is not set - add it to .env")
-
     workspace = seed_workspace(fresh=args.fresh)
     agent = build_standalone_agent(use_mock=args.mock)
 
     prompt = ROUND2_PROMPT if args.round2 else ROUND1_PROMPT
     print(f"\n[harness] task prompt:\n{prompt}")
 
-    result = agent.invoke(
-        {"messages": [{"role": "user", "content": prompt}]},
-        config={"recursion_limit": 100},
+    # ainvoke, not invoke - langchain_mcp_adapters tools are async-only, so
+    # Level 2 (real MCP tools) raises NotImplementedError under sync invoke.
+    result = asyncio.run(
+        agent.ainvoke(
+            {"messages": [{"role": "user", "content": prompt}]},
+            config={"recursion_limit": 100},
+        )
     )
     print(f"[harness] agent summary:\n{result['messages'][-1].content}\n")
 
