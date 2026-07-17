@@ -28,6 +28,7 @@ import subprocess
 from pathlib import Path
 
 from backends.project_backend import RUN_ARTIFACTS_DIR
+from tools.docker_sandbox import CONTAINER_NAME, DockerSandboxManager
 
 _DRIVERS_DIR = Path(__file__).resolve().parent / "gpu_drivers"
 
@@ -66,41 +67,18 @@ def run_driver(script_name: str, args: list[str], *, timeout: int) -> str:
     Raises:
         GpuExecError: on non-zero exit, timeout, or docker-not-found.
     """
-    workspace = Path(RUN_ARTIFACTS_DIR).resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
+    # 1. Ensure the persistent sandbox container is running
+    DockerSandboxManager.ensure_started()
 
+    # 2. Execute the driver script inside the long-lived container via docker exec
     cmd: list[str] = [
         "docker",
-        "run",
-        "--rm",
-        f"--gpus={DEFAULT_GPUS}",
-        # Default docker /dev/shm is 64MB; ultralytics DataLoader workers need
-        # more or they get killed ("DataLoader worker (pid ...) is killed").
-        f"--shm-size={DEFAULT_SHM}",
-        "-v",
-        f"{workspace}:/workspace",
-        "-v",
-        f"{_DRIVERS_DIR}:/drivers:ro",
-        "-w",
-        "/workspace",
-        # Keep every cache/config dir inside the (host-owned) bind mount so
-        # nothing is written to root-owned locations and downloads persist.
-        "-e",
-        "HOME=/workspace",
-        "-e",
-        "YOLO_CONFIG_DIR=/workspace/.ultralytics",
-        "-e",
-        "MPLCONFIGDIR=/workspace/.mpl",
-        "-e",
-        "TORCH_HOME=/workspace/.torch",
+        "exec",
+        CONTAINER_NAME,
+        "python",
+        f"/drivers/{script_name}",
+        *args,
     ]
-    # Run as the host user so artifacts under run_artifacts/ stay user-owned
-    # (not root). os.getuid only exists on POSIX - on Windows (dev machine) we
-    # skip it; real runs happen on the Linux GPU server anyway.
-    if hasattr(os, "getuid"):
-        cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
-
-    cmd += [DEFAULT_IMAGE, "python", f"/drivers/{script_name}", *args]
 
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, args are ints/enums

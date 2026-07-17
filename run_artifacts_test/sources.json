@@ -1,0 +1,36 @@
+[
+  {
+    "source": "roboflow_universe",
+    "dataset_id": "traffic-detection/traffic-detection-4",
+    "url": "https://universe.roboflow.com/example/traffic-detection-4",
+    "classes_covered": [
+      "car",
+      "truck"
+    ],
+    "image_count": 5,
+    "annotation_format": "YOLO",
+    "license": "CC BY 4.0",
+    "annotation_coverage": {
+      "car": 3,
+      "truck": 2
+    },
+    "quality_notes": "dummy synthetic data for dataset-agent testing",
+    "status": "available"
+  },
+  {
+    "source": "kaggle",
+    "dataset_id": "andrewmvd/car-plate-detection",
+    "url": "https://kaggle.com/datasets/andrewmvd/car-plate-detection",
+    "classes_covered": [
+      "bus"
+    ],
+    "image_count": 300,
+    "annotation_format": "Pascal VOC",
+    "license": "CC0",
+    "annotation_coverage": {
+      "bus": 0
+    },
+    "quality_notes": "unannotated raw images - deliberately left unstaged",
+    "status": "needs_annotation"
+  }
+]

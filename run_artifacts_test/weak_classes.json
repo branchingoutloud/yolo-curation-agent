@@ -1,0 +1,31 @@
+{
+  "overall_map50": 0.0,
+  "overall_map50_95": 0.0,
+  "split": "val",
+  "weak_classes": [
+    {
+      "class": "car",
+      "map50": 0.0,
+      "map50_95": 0.0,
+      "train_instances": 1,
+      "val_instances": 1,
+      "likely_cause": "low mAP50 - check label quality / add harder or more varied examples"
+    },
+    {
+      "class": "truck",
+      "map50": 0.0,
+      "map50_95": 0.0,
+      "train_instances": 2,
+      "val_instances": 0,
+      "likely_cause": "low mAP50 - check label quality / add harder or more varied examples"
+    },
+    {
+      "class": "bus",
+      "map50": 0.0,
+      "map50_95": 0.0,
+      "train_instances": 0,
+      "val_instances": 0,
+      "likely_cause": "under-represented in training (0 boxes vs ~2 median); low mAP50 - check label quality / add harder or more varied examples"
+    }
+  ]
+}
