@@ -12,8 +12,7 @@ from pathlib import Path
 from deepagents import create_deep_agent
 
 from backends.project_backend import project_backend
-from backends.sandboxes import annotation_sandbox_backend, training_sandbox_backend
-from subagents.annotation import build_annotation_agent
+from backends.sandboxes import training_sandbox_backend
 from subagents.dataset import build_dataset_agent
 from subagents.eval import build_eval_agent
 from subagents.planning import build_planning_agent
@@ -21,7 +20,20 @@ from subagents.sourcing import build_sourcing_agent
 from subagents.training import build_training_agent
 from tools.approval import request_approval
 from tools.mcp_clients import get_kaggle_tools, get_roboflow_tools, get_web_search_tools
-from tools.zero_shot_annotate import zero_shot_annotate
+from tools.model_builder import build_model
+
+# annotation-agent is temporarily excluded from the active roster - sourcing-agent
+# now hands off directly to dataset-agent. dataset-agent treats any sources.json
+# entry with status != "available" as pending (not routed anywhere) rather than
+# assuming annotation-agent will pick it up. To re-enable: restore the
+# `from subagents.annotation import build_annotation_agent`,
+# `from backends.sandboxes import annotation_sandbox_backend`, and
+# `from tools.zero_shot_annotate import zero_shot_annotate` imports and add
+# `build_annotation_agent(roboflow_tools, [zero_shot_annotate], annotation_sandbox_backend)`
+# back into the `subagents` list below - note its "backend" override won't
+# actually take effect either way (see tools/dataset_builder.py's module
+# docstring for why per-subagent backend overrides are inert in
+# deepagents==0.6.12).
 
 ORCHESTRATOR_PROMPT = """
 You are the orchestrator for a YOLO data-curation and training agent. Your goal:
@@ -51,6 +63,8 @@ from the filesystem tools first.
 
 SKILLS_DIR = str(Path(__file__).resolve().parent / "skills")
 
+ORCHESTRATOR_MODEL_SPEC = os.environ.get("ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-5")
+
 
 def build_agent():
     roboflow_tools = get_roboflow_tools()
@@ -60,14 +74,21 @@ def build_agent():
     subagents = [
         build_planning_agent(),
         build_sourcing_agent(roboflow_tools, kaggle_tools, web_search_tools),
-        build_annotation_agent(roboflow_tools, [zero_shot_annotate], annotation_sandbox_backend),
-        build_dataset_agent(),
+        build_dataset_agent(roboflow_tools, kaggle_tools),
         build_training_agent(training_sandbox_backend),
         build_eval_agent(training_sandbox_backend),
     ]
 
+    # build_model resolves "ollama:..." through the shared Ollama-Cloud-aware
+    # helper (base_url/API-key/single-concurrency-lock wiring - see
+    # tools/model_builder.py); anything else (anthropic:, groq:, huggingface:)
+    # passes straight through to init_chat_model. Falls back to the raw spec
+    # string if construction fails, matching create_deep_agent's own ability
+    # to accept either a resolved model object or a plain string.
+    orchestrator_model = build_model(ORCHESTRATOR_MODEL_SPEC) or ORCHESTRATOR_MODEL_SPEC
+
     return create_deep_agent(
-        model=os.environ.get("ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-5"),
+        model=orchestrator_model,
         system_prompt=ORCHESTRATOR_PROMPT,
         subagents=subagents,
         tools=[request_approval],

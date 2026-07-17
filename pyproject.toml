@@ -9,11 +9,19 @@ dependencies = [
     "langchain-core",
     "langchain-mcp-adapters",
     "langchain-tavily",
+    "langchain-groq",
+    "langchain-ollama",
     "modal",
-    "ultralytics",
-    "supervision",
     "python-dotenv",
+    "requests",
+    "pyyaml",
+    "pillow",
+    "imagehash",
 ]
+# NOTE: ultralytics/supervision are NOT listed here on purpose - they run
+# inside the Modal sandbox image (see backends/sandboxes.py), never imported
+# by this orchestrator process itself. Keeping them out of the local venv
+# avoids pulling in torch locally for no benefit.
 
 [build-system]
 requires = ["setuptools>=68"]

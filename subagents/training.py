@@ -1,8 +1,19 @@
+import os
+
 from deepagents import SubAgent
+
+from tools.model_builder import build_model
+
+# TRAINING_AGENT_MODEL is an OPTIONAL override - unset by default, so
+# training-agent inherits ORCHESTRATOR_MODEL. Its job (once the sandbox-
+# wiring bug in Known stubs is fixed) is mostly mechanical - pick a model
+# size per the skill's rule, launch execute(), append status lines - so a
+# lighter model is a reasonable override to set explicitly rather than
+# spending the same budget as sourcing/dataset-agent's tool-calling load.
 
 
 def build_training_agent(sandbox_backend) -> SubAgent:
-    return {
+    spec: SubAgent = {
         "name": "training-agent",
         "description": "Selects a YOLO model size and runs ultralytics training in a GPU sandbox.",
         "system_prompt": (
@@ -16,3 +27,7 @@ def build_training_agent(sandbox_backend) -> SubAgent:
         "tools": [],
         "backend": sandbox_backend,  # Modal GPU sandbox
     }
+    model = build_model(os.environ.get("TRAINING_AGENT_MODEL"))
+    if model is not None:
+        spec["model"] = model
+    return spec
