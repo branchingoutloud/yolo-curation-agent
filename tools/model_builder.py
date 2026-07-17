@@ -23,6 +23,7 @@ needed.
 import asyncio
 import os
 import threading
+import time
 
 from langchain.chat_models import init_chat_model
 from langchain_ollama import ChatOllama
@@ -39,6 +40,50 @@ from langchain_ollama import ChatOllama
 _CLOUD_CALL_LOCK = threading.Lock()
 _CLOUD_CALL_ASYNC_LOCK = asyncio.Lock()
 
+# Ollama Cloud (especially the free tier) intermittently returns 5xx on an
+# otherwise-valid request - documented in CLAUDE.md. Retry a few times with
+# exponential backoff so one transient blip doesn't kill a whole graph run.
+# Overridable via env (set OLLAMA_MAX_RETRIES=0 to disable).
+_RETRY_STATUS = {500, 502, 503, 504}
+_MAX_RETRIES = int(os.environ.get("OLLAMA_MAX_RETRIES", "2"))
+_RETRY_BASE_DELAY = float(os.environ.get("OLLAMA_RETRY_BACKOFF", "2.0"))
+
+try:  # recent ollama re-exports ResponseError at the top level
+    from ollama import ResponseError as _ResponseError
+except Exception:  # noqa: BLE001 - fall back to the private path, else disable status checks
+    try:
+        from ollama._types import ResponseError as _ResponseError
+    except Exception:  # noqa: BLE001
+        _ResponseError = None
+
+# httpx transient transport failures (matched by class name to avoid a hard
+# httpx import here) - connection resets, read timeouts, etc.
+_TRANSIENT_EXC_NAMES = {
+    "ConnectError",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "PoolTimeout",
+    "WriteError",
+}
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """True for transient Ollama Cloud failures worth retrying."""
+    if _ResponseError is not None and isinstance(exc, _ResponseError):
+        return getattr(exc, "status_code", None) in _RETRY_STATUS
+    return type(exc).__name__ in _TRANSIENT_EXC_NAMES
+
+
+def _log_retry(exc: Exception, attempt: int, delay: float, *, pre_stream: bool = False) -> None:
+    status = getattr(exc, "status_code", "")
+    where = " (pre-stream)" if pre_stream else ""
+    print(
+        f"[model_builder] transient {type(exc).__name__} {status} from Ollama Cloud{where}; "
+        f"retry {attempt + 1}/{_MAX_RETRIES} in {delay:.0f}s"
+    )
+
 
 class _ThrottledCloudChatOllama(ChatOllama):
     """ChatOllama that serializes every call behind the shared cloud lock.
@@ -52,20 +97,61 @@ class _ThrottledCloudChatOllama(ChatOllama):
 
     def _generate(self, *args, **kwargs):
         with _CLOUD_CALL_LOCK:
-            return super()._generate(*args, **kwargs)
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    return super()._generate(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 - retry transient, re-raise the rest
+                    if attempt >= _MAX_RETRIES or not _is_retryable(exc):
+                        raise
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    _log_retry(exc, attempt, delay)
+                    time.sleep(delay)
 
     def _stream(self, *args, **kwargs):
         with _CLOUD_CALL_LOCK:
-            yield from super()._stream(*args, **kwargs)
+            for attempt in range(_MAX_RETRIES + 1):
+                started = False
+                try:
+                    for chunk in super()._stream(*args, **kwargs):
+                        started = True
+                        yield chunk
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    # Only safe to retry before the first chunk - restarting
+                    # after emitting content would duplicate output.
+                    if started or attempt >= _MAX_RETRIES or not _is_retryable(exc):
+                        raise
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    _log_retry(exc, attempt, delay, pre_stream=True)
+                    time.sleep(delay)
 
     async def _agenerate(self, *args, **kwargs):
         async with _CLOUD_CALL_ASYNC_LOCK:
-            return await super()._agenerate(*args, **kwargs)
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    return await super()._agenerate(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    if attempt >= _MAX_RETRIES or not _is_retryable(exc):
+                        raise
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    _log_retry(exc, attempt, delay)
+                    await asyncio.sleep(delay)
 
     async def _astream(self, *args, **kwargs):
         async with _CLOUD_CALL_ASYNC_LOCK:
-            async for chunk in super()._astream(*args, **kwargs):
-                yield chunk
+            for attempt in range(_MAX_RETRIES + 1):
+                started = False
+                try:
+                    async for chunk in super()._astream(*args, **kwargs):
+                        started = True
+                        yield chunk
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    if started or attempt >= _MAX_RETRIES or not _is_retryable(exc):
+                        raise
+                    delay = _RETRY_BASE_DELAY * (2**attempt)
+                    _log_retry(exc, attempt, delay, pre_stream=True)
+                    await asyncio.sleep(delay)
 
 
 # Confirmed against the installed langchain-ollama version (chat_models.py):
