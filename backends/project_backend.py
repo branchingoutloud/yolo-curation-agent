@@ -20,6 +20,6 @@ Path(RUN_ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
 project_backend = CompositeBackend(
     default=StateBackend(),
     routes={
-        "/workspace/": FilesystemBackend(root_dir=RUN_ARTIFACTS_DIR, virtual_mode=True),
+        "/workspace/": FilesystemBackend(root_dir=RUN_ARTIFACTS_DIR),
     },
 )
