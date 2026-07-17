@@ -13,6 +13,9 @@ dependencies = [
     "ultralytics",
     "supervision",
     "python-dotenv",
+    "langchain-google-genai",
+    "langchain-groq",
+    "langchain-ollama",
 ]
 
 [build-system]

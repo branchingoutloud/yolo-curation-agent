@@ -1,7 +1,11 @@
 from deepagents import SubAgent
 
 
-def build_annotation_agent(roboflow_tools: list, zero_shot_tools: list, sandbox_backend) -> SubAgent:
+def build_annotation_agent(roboflow_tools: list, zero_shot_tools: list) -> SubAgent:
+    # No per-subagent sandbox override here: installed deepagents (0.6.12)
+    # silently ignores a "backend" key on a SubAgent spec. execute() for this
+    # subagent comes from the single backend passed to create_deep_agent —
+    # see subagents/training.py's docstring for the full explanation.
     return {
         "name": "annotation-agent",
         "description": "Zero-shot pre-labels images for classes with no annotated data found.",
@@ -12,5 +16,4 @@ def build_annotation_agent(roboflow_tools: list, zero_shot_tools: list, sandbox_
             "and record results in annotation_manifest.json."
         ),
         "tools": [*roboflow_tools, *zero_shot_tools],
-        "backend": sandbox_backend,  # per-subagent sandbox override
     }

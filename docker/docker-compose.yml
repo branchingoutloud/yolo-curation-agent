@@ -1,0 +1,25 @@
+# Optional, isolated alternative to SANDBOX_BACKEND=local.
+#
+# Start:  docker compose -f docker/docker-compose.yml up -d --build
+# Stop:   docker compose -f docker/docker-compose.yml down
+#
+# Then set SANDBOX_BACKEND=docker in .env before running the orchestrator or
+# test scripts - backends/sandboxes.py picks this container up by name.
+services:
+  training-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: yolo-training-sandbox
+    volumes:
+      - ../run_artifacts:/workspace
+    # Uncomment on a machine with an NVIDIA GPU + nvidia-container-toolkit:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    tty: true
+    stdin_open: true

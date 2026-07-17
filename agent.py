@@ -6,13 +6,9 @@ file is the §3 code sample wired up to the actual subagents/tools/backends
 modules in this repo instead of inline placeholders.
 """
 
-import os
-from pathlib import Path
-
 from deepagents import create_deep_agent
 
 from backends.project_backend import project_backend
-from backends.sandboxes import annotation_sandbox_backend, training_sandbox_backend
 from subagents.annotation import build_annotation_agent
 from subagents.dataset import build_dataset_agent
 from subagents.eval import build_eval_agent
@@ -21,6 +17,7 @@ from subagents.sourcing import build_sourcing_agent
 from subagents.training import build_training_agent
 from tools.approval import request_approval
 from tools.mcp_clients import get_kaggle_tools, get_roboflow_tools, get_web_search_tools
+from tools.models import build_default_model
 from tools.zero_shot_annotate import zero_shot_annotate
 
 ORCHESTRATOR_PROMPT = """
@@ -49,7 +46,11 @@ Never fabricate metrics, dataset stats, or file contents - always read them
 from the filesystem tools first.
 """
 
-SKILLS_DIR = str(Path(__file__).resolve().parent / "skills")
+# Virtual backend path, not a host filesystem path — SkillsMiddleware sources
+# are paths *in the backend*; project_backend routes "/skills/" to a
+# FilesystemBackend rooted at the real skills/ directory (see
+# backends/project_backend.py).
+SKILLS_DIR = "/skills"
 
 
 def build_agent():
@@ -57,17 +58,22 @@ def build_agent():
     kaggle_tools = get_kaggle_tools()
     web_search_tools = get_web_search_tools()
 
+    # A constructed model *object* (not a bare "provider:model" string) is
+    # required here so Ollama Cloud's custom base_url/auth header survive
+    # deepagents' per-subagent model inheritance — see tools/models.py.
+    model = build_default_model()
+
     subagents = [
         build_planning_agent(),
         build_sourcing_agent(roboflow_tools, kaggle_tools, web_search_tools),
-        build_annotation_agent(roboflow_tools, [zero_shot_annotate], annotation_sandbox_backend),
+        build_annotation_agent(roboflow_tools, [zero_shot_annotate]),
         build_dataset_agent(),
-        build_training_agent(training_sandbox_backend),
-        build_eval_agent(training_sandbox_backend),
+        build_training_agent(),
+        build_eval_agent(),
     ]
 
     return create_deep_agent(
-        model=os.environ.get("ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-5"),
+        model=model,
         system_prompt=ORCHESTRATOR_PROMPT,
         subagents=subagents,
         tools=[request_approval],

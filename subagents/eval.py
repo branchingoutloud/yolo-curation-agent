@@ -1,7 +1,11 @@
 from deepagents import SubAgent
 
 
-def build_eval_agent(sandbox_backend) -> SubAgent:
+def build_eval_agent() -> SubAgent:
+    # No per-subagent sandbox override here: installed deepagents (0.6.12)
+    # silently ignores a "backend" key on a SubAgent spec. execute() for this
+    # subagent comes from the single backend passed to create_deep_agent —
+    # see subagents/training.py's docstring for the full explanation.
     return {
         "name": "eval-agent",
         "description": (
@@ -24,5 +28,4 @@ def build_eval_agent(sandbox_backend) -> SubAgent:
             "re-annotate, or just retune."
         ),
         "tools": [],
-        "backend": sandbox_backend,  # reuse - weights are already there
     }
