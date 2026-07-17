@@ -1,0 +1,280 @@
+"ResponseError('you (santoshjadhav) have reached your session usage limit, upgrade for higher limits: https://ollama.com/upgrade (ref: 7ab41297-4d44-45ed-9ccf-94257ba010d0)')Traceback (most recent call last):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\main.py", line 3440, in astream
+    async for _ in runner.atick(
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 557, in atick
+    _panic_or_proceed(
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 687, in _panic_or_proceed
+    raise exc
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 733, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 501, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 858, in _afunc
+    outputs = await asyncio.gather(*coros)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 1216, in _arun_one
+    content = _handle_tool_error(e, flag=self._handle_tool_errors)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 434, in _handle_tool_error
+    content = flag(e)  # type: ignore [assignment, call-arg]
+              ^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 391, in _default_handle_tool_errors
+    raise e
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 1207, in _arun_one
+    return await self._awrap_tool_call(tool_request, execute)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langsmith
+un_helpers.py", line 644, in async_wrapper
+    function_result = await asyncio.create_task(  # type: ignore[call-arg]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\deepagents\middleware\filesystem.py", line 2406, in awrap_tool_call
+    tool_result = await handler(request)
+                  ^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 1198, in execute
+    return await self._execute_tool_async(req, input_type, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 1153, in _execute_tool_async
+    content = _handle_tool_error(e, flag=self._handle_tool_errors)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 434, in _handle_tool_error
+    content = flag(e)  # type: ignore [assignment, call-arg]
+              ^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 391, in _default_handle_tool_errors
+    raise e
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\prebuilt	ool_node.py", line 1105, in _execute_tool_async
+    response = await tool.ainvoke(call_args, config)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core	ools\structured.py", line 70, in ainvoke
+    return await super().ainvoke(input, config, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core	ools\base.py", line 748, in ainvoke
+    return await self.arun(tool_input, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core	ools\base.py", line 1230, in arun
+    raise error_to_raise
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core	ools\base.py", line 1196, in arun
+    response = await coro_with_context(coro, context)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core	ools\structured.py", line 124, in _arun
+    return await self.coroutine(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\deepagents\middleware\subagents.py", line 721, in atask
+    result = await subagent.ainvoke(subagent_state, subagent_config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\main.py", line 4090, in ainvoke
+    async for chunk in self.astream(
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\main.py", line 3440, in astream
+    async for _ in runner.atick(
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 396, in atick
+    await arun_with_retry(
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\pregel\_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 733, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 501, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 1498, in amodel_node
+    result = await awrap_model_call_handler(request, _execute_model_async)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 402, in composed
+    outer_result = await outer(request, inner_handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langsmith
+un_helpers.py", line 644, in async_wrapper
+    function_result = await asyncio.create_task(  # type: ignore[call-arg]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\middleware	odo.py", line 283, in awrap_model_call
+    return await handler(request.override(system_message=new_system_message))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 392, in inner_handler
+    inner_result = await inner(req, handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 402, in composed
+    outer_result = await outer(request, inner_handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langsmith
+un_helpers.py", line 644, in async_wrapper
+    function_result = await asyncio.create_task(  # type: ignore[call-arg]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\deepagents\middleware\filesystem.py", line 2005, in awrap_model_call
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 392, in inner_handler
+    inner_result = await inner(req, handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 402, in composed
+    outer_result = await outer(request, inner_handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langsmith
+un_helpers.py", line 644, in async_wrapper
+    function_result = await asyncio.create_task(  # type: ignore[call-arg]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\deepagents\middleware\summarization.py", line 1568, in awrap_model_call
+    return await handler(request.override(messages=truncated_messages))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 392, in inner_handler
+    inner_result = await inner(req, handler)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langsmith
+un_helpers.py", line 644, in async_wrapper
+    function_result = await asyncio.create_task(  # type: ignore[call-arg]
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_anthropic\middleware\prompt_caching.py", line 187, in awrap_model_call
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain\agents\factory.py", line 1467, in _execute_model_async
+    output = await model_.ainvoke(messages)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core
+unnables\base.py", line 6015, in ainvoke
+    return await self.bound.ainvoke(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core\language_models\chat_models.py", line 499, in ainvoke
+    llm_result = await self.agenerate_prompt(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core\language_models\chat_models.py", line 1860, in agenerate_prompt
+    return await self.agenerate(
+           ^^^^^^^^^^^^^^^^^^^^^
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core\language_models\chat_models.py", line 1818, in agenerate
+    raise exceptions[0]
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_core\language_models\chat_models.py", line 2108, in _agenerate_with_cache
+    async for chunk in self._astream(messages, stop=stop, **kwargs):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent	ools\model_builder.py", line 118, in _astream
+    async for chunk in super()._astream(*args, **kwargs):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_ollama\chat_models.py", line 1373, in _astream
+    async for chunk in self._aiterate_over_stream(messages, stop, **kwargs):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_ollama\chat_models.py", line 1306, in _aiterate_over_stream
+    async for stream_resp in self._acreate_chat_stream(messages, stop, **kwargs):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\langchain_ollama\chat_models.py", line 1102, in _acreate_chat_stream
+    async for part in await self._async_client.chat(**chat_params):
+
+
+  File "D:\deep_agent_ui\yolo-deep-agent\.venv\Lib\site-packages\ollama\_client.py", line 782, in inner
+    raise ResponseError(e.response.text, e.response.status_code) from None
+
+
+ollama._types.ResponseError: you (santoshjadhav) have reached your session usage limit, upgrade for higher limits: https://ollama.com/upgrade (ref: 7ab41297-4d44-45ed-9ccf-94257ba010d0) (status code: 429)
+
+
+During task with name 'model' and id 'c6c30c15-d88b-6385-f459-f325633b48a1'
+
+
+During task with name 'tools' and id '04416178-c5d9-19cd-631f-c9a7569871c7'"

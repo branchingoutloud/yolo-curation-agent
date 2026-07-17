@@ -46,3 +46,52 @@ def build_training_agent() -> SubAgent:
     if model is not None:
         spec["model"] = model
     return spec
+
+
+# --- ALTERNATIVE: Modal sandbox approach (from feature/training_agent) ---
+# Uses build_sandbox_subagent to create a CompiledSubAgent with a real
+# execute() tool running in a Modal GPU sandbox instead of local Docker.
+# To use this instead:
+#   1. Uncomment the code below
+#   2. Comment out the build_training_agent() above
+#   3. Update agent.py to pass sandbox_backend to build_training_agent()
+#
+# from deepagents.middleware.subagents import CompiledSubAgent
+# from subagents.sandbox_subagent import build_sandbox_subagent
+#
+# def _resolve_model():
+#     # Unlike a declarative SubAgent dict (which deepagents' own subagent-
+#     # building loop falls back to ORCHESTRATOR_MODEL for automatically via
+#     # `spec.get("model", model)`), this subagent is its own independent
+#     # create_deep_agent(...) call - it has no automatic visibility into the
+#     # orchestrator's resolved model, so an unset TRAINING_AGENT_MODEL must
+#     # be resolved against ORCHESTRATOR_MODEL explicitly here, or it silently
+#     # falls back to deepagents' own built-in default (Anthropic) and fails
+#     # without ANTHROPIC_API_KEY set.
+#     model_spec = os.environ.get("TRAINING_AGENT_MODEL") or os.environ.get(
+#         "ORCHESTRATOR_MODEL", "anthropic:claude-sonnet-5"
+#     )
+#     return build_model(model_spec)
+#
+#
+# def build_training_agent(sandbox_backend) -> CompiledSubAgent:
+#     return build_sandbox_subagent(
+#         name="training-agent",
+#         description="Selects a YOLO model size and runs ultralytics training in a GPU sandbox.",
+#         system_prompt=(
+#             "Read /workspace/dataset/data.yaml and the confirmed model size from "
+#             "/workspace/model_choice.json (consult the yolo-model-selection skill if the "
+#             "choice needs revisiting). Launch training via execute() - e.g. `yolo detect "
+#             "train data=/workspace/dataset/data.yaml model=<size>.pt ...`. Every few "
+#             "epochs, append a short status line to /workspace/runs/train/status.md - never "
+#             "print raw ultralytics logs to your final message. On completion, copy/rename "
+#             "ultralytics' actual output into /workspace/runs/train/metrics.json (and leave "
+#             "trained weights under /workspace/runs/train/weights/ - they stay in this "
+#             "sandbox for eval-agent to reuse directly, not downloaded to the shared "
+#             "workspace)."
+#         ),
+#         sandbox_backend=sandbox_backend,
+#         model=_resolve_model(),
+#         upload_paths=["/workspace/dataset", "/workspace/model_choice.json"],
+#         download_paths=["/workspace/runs/train/status.md", "/workspace/runs/train/metrics.json"],
+#     )

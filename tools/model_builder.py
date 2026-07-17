@@ -86,13 +86,19 @@ def _log_retry(exc: Exception, attempt: int, delay: float, *, pre_stream: bool =
 
 
 class _ThrottledCloudChatOllama(ChatOllama):
-    """ChatOllama that serializes every call behind the shared cloud lock.
+    """ChatOllama that serializes every call behind the shared cloud lock and
+    retries transient 5xx errors.
 
     Covers all four entry points BaseChatModel funnels invoke/ainvoke/stream/
     astream through. Sync and async calls are only serialized against calls
     of the same kind (separate locks) - acceptable here since real usage is
     either the fully-async langgraph server or a single standalone test
     script, never both against the same key at once.
+
+    The streaming variants only retry if nothing has been yielded yet in the
+    failing attempt - once a caller has received a partial chunk there's no
+    safe way to "undo" it, so a mid-stream failure past the first chunk still
+    raises rather than risking duplicated/garbled output.
     """
 
     def _generate(self, *args, **kwargs):
