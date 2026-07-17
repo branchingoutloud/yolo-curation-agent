@@ -20,6 +20,15 @@ Path(RUN_ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
 project_backend = CompositeBackend(
     default=StateBackend(),
     routes={
-        "/workspace/": FilesystemBackend(root_dir=RUN_ARTIFACTS_DIR),
+        # virtual_mode=True is required here, not optional: CompositeBackend
+        # strips the "/workspace/" prefix and forwards normalized paths to
+        # this backend, and deepagents' own docs say virtual_mode is exactly
+        # for that case. Without it (the default), absolute paths bypass
+        # root_dir entirely - a tool call with path="/" resolved to the real
+        # filesystem root and crashed a run walking C:\$Recycle.Bin. With
+        # virtual_mode=True, every path is anchored under root_dir and a
+        # resolved path escaping it raises ValueError instead of touching
+        # real files outside run_artifacts/.
+        "/workspace/": FilesystemBackend(root_dir=RUN_ARTIFACTS_DIR, virtual_mode=True),
     },
 )
