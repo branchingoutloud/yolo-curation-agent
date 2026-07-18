@@ -88,29 +88,21 @@ _ROBOFLOW_TOOL_ALLOWLIST = {
     "versions_export",
 }
 
-# Kaggle's real MCP server (https://www.kaggle.com/mcp) exposes ~70 tools
-# across its whole product surface - same bloat risk as Roboflow's 107.
-# dataset-agent actually fetches (unlike sourcing-agent, which only
-# catalogs - see its own, narrower allowlist in subagents/sourcing.py), so
-# this keeps download_dataset/list_dataset_files in addition to the
-# discovery tools.
-_KAGGLE_TOOL_ALLOWLIST = {
-    "get_dataset_info",
-    "get_dataset_files_summary",
-    "list_dataset_files",
-    "download_dataset",
-}
+# dataset-agent no longer binds any Kaggle tools: list_qualifying_sources
+# (tools/dataset_builder.py) now hard-filters to Roboflow Universe sources
+# only (checked against the URL's actual domain, not the free-text `source`
+# field), so a Kaggle entry can never be selected for fetching - Kaggle
+# tools would be dead weight. sourcing-agent still searches/catalogs Kaggle
+# (see subagents/sourcing.py) for visibility; it's just never fetched here.
+# `kaggle_tools` is kept as a parameter below purely so existing call sites
+# (agent.py, scripts/*) don't need to change - it's intentionally unused.
 
 
 def _filter_roboflow_tools(roboflow_tools: list) -> list:
     return [t for t in roboflow_tools if getattr(t, "name", None) in _ROBOFLOW_TOOL_ALLOWLIST]
 
 
-def _filter_kaggle_tools(kaggle_tools: list) -> list:
-    return [t for t in kaggle_tools if getattr(t, "name", None) in _KAGGLE_TOOL_ALLOWLIST]
-
-
-def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
+def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:  # noqa: ARG001 - kaggle_tools kept for call-site compatibility, see comment above
     spec: SubAgent = {
         "name": "dataset-agent",
         "description": (
@@ -126,19 +118,23 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             '"classes_covered": ["car"], "image_count": 1200, "annotation_format": "YOLO", '
             '"license": "...", "annotation_coverage": {"car": 800}, "quality_notes": "...", '
             '"status": "available"}\n'
-            "This run merges up to 3 qualifying sources (the largest, by image_count), not "
-            "just the single biggest one - but capped, not unlimited: forking and "
-            "exporting every qualifying source has real Roboflow API cost (a fork + "
-            "version-generate + export each) for shrinking benefit once the largest few "
-            "are already merged. Call list_qualifying_sources first: it filters to entries "
-            "with status == \"available\" and annotation_format == \"YOLO\" (the only ones "
-            "auto-mergeable right now), already applies this cap in code, and returns "
-            "exactly the sources you should fetch (index, dataset_id, url, image_count) "
-            "plus any other qualifying sources it deliberately excluded for being past the "
-            "cap. Fetch/stage EVERY index it lists - do not skip any of them - and do not "
-            "fetch anything beyond what it returns, even if sources.json has more "
-            "qualifying entries; mention any cap-excluded sources in your final summary so "
-            "the orchestrator knows more data exists if a future round wants it. If "
+            "This run merges up to 3 qualifying Roboflow Universe sources (the largest, by "
+            "image_count), not just the single biggest one - but capped, not unlimited: "
+            "forking and exporting every qualifying source has real Roboflow API cost (a "
+            "fork + version-generate + export each) for shrinking benefit once the largest "
+            "few are already merged. Only Roboflow Universe sources are auto-fetchable "
+            "right now - dataset-agent's fetch chain only knows how to fork/export from "
+            "Roboflow, so any other source (e.g. Kaggle) that otherwise qualifies is never "
+            "selected, no matter how large. Call list_qualifying_sources first: it filters "
+            "to entries with status == \"available\", annotation_format == \"YOLO\", and a "
+            "url actually on roboflow.com, already applies both that restriction and the "
+            "cap in code, and returns exactly the sources you should fetch (index, "
+            "dataset_id, url, image_count) plus any other qualifying sources it "
+            "deliberately excluded (for being non-Roboflow, or for being past the cap). "
+            "Fetch/stage EVERY index it lists - do not skip any of them - and do not fetch "
+            "anything beyond what it returns, even if sources.json has more qualifying "
+            "entries; mention any excluded sources in your final summary so the "
+            "orchestrator knows more data exists if a future round wants it. If "
             "list_qualifying_sources reports nothing qualifies "
             "(e.g. every source still needs annotation), say so plainly rather than fetching "
             "anything - annotation-agent is not part of the active roster in this run, so a "
@@ -221,8 +217,11 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             "there. Nothing in this chain ever uploads the merged result back to Roboflow "
             "either - the merged dataset only ever exists locally under output_dir, never "
             "on the Roboflow dashboard, so don't expect to see it there.\n"
-            "For a Kaggle source, use download_dataset or a direct-download URL with "
-            "download_and_extract instead - no fork/version chain applies there.\n"
+            "list_qualifying_sources only ever returns Roboflow Universe sources - "
+            "anything else (e.g. Kaggle) that otherwise qualifies is reported separately "
+            "as excluded, not selected for fetching, since only the Roboflow fork/export "
+            "chain above is auto-fetchable right now. Mention any such excluded sources "
+            "in your summary too, the same way you'd mention cap-excluded ones.\n"
             "If any step fails or a required tool isn't available, say so plainly and "
             "specifically in your summary (which step, what error) rather than treating "
             "the source as vaguely blocked or silently giving up.\n\n"
@@ -244,7 +243,6 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
         ),
         "tools": [
             *_filter_roboflow_tools(roboflow_tools),
-            *_filter_kaggle_tools(kaggle_tools),
             list_qualifying_sources,
             download_and_extract,
             merge_and_split_dataset,

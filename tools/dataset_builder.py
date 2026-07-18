@@ -139,6 +139,18 @@ def _load_sources(sources_json_path: str) -> list[dict]:
     return data
 
 
+def _is_roboflow_universe(source: dict) -> bool:
+    """True if a source's URL is actually on a roboflow.com domain.
+
+    Checked against the URL itself, not the free-text `source` field -
+    append_sources never validates that `source` matches `url` (it only
+    checks required fields are present), so a mislabeled entry (e.g.
+    "source": "roboflow_universe" on a Kaggle URL, or vice versa) would
+    otherwise slip through undetected.
+    """
+    return "roboflow.com" in str(source.get("url", "")).lower()
+
+
 @tool
 def list_qualifying_sources(
     sources_json_path: str = "/workspace/sources.json",
@@ -146,28 +158,35 @@ def list_qualifying_sources(
 ) -> str:
     """List which sources to fetch/merge right now, capped at max_sources.
 
-    Filters sources_json_path down to entries with status == "available" and
+    Filters sources_json_path down to entries with status == "available",
     annotation_format == "YOLO" (the same filter merge_and_split_dataset
-    applies) - real filtering over the file, not something the calling agent
-    has to eyeball itself across a long sources.json. Sorts by image_count
-    descending and returns only the top `max_sources` (default 3) - forking
-    and exporting every qualifying source has real Roboflow API cost (a fork
-    + version-generate + export per source) for shrinking benefit once the
-    largest few are already merged, so this is capped rather than unlimited.
-    Enforced here in code rather than left to the calling agent to
-    self-limit, since a prompted "only fetch N of these" instruction is not
+    applies), and a url actually on roboflow.com - real filtering over the
+    file, not something the calling agent has to eyeball itself across a
+    long sources.json. Only Roboflow Universe sources are auto-fetchable
+    right now (dataset-agent's fetch chain only knows how to fork/export
+    from Roboflow); a qualifying non-Roboflow source (e.g. Kaggle) is
+    reported separately as excluded, never silently dropped, and never
+    selected for fetching. Sorts the remaining Roboflow candidates by
+    image_count descending and returns only the top `max_sources` (default
+    3) - forking and exporting every qualifying source has real Roboflow API
+    cost (a fork + version-generate + export per source) for shrinking
+    benefit once the largest few are already merged, so this is capped
+    rather than unlimited. Both restrictions are enforced here in code
+    rather than left to the calling agent to self-limit, since a prompted
+    "only fetch N of these" or "only use Roboflow" instruction is not
     reliably followed.
 
     Returns a plain-text list of the selected sources (0-based index,
-    source, dataset_id, url, image_count), largest-first, plus a separate
-    list of any additional qualifying sources excluded purely by this cap
-    (named, not silently dropped, so the calling agent can mention them in
-    its summary) - or a plain-text explanation if none currently qualify.
-    Fetch/stage EVERY listed (selected) index under sourced_dir/<index>/ -
-    merge_and_split_dataset merges whatever is staged across all of them
-    (deduping near-identical images and re-splitting the combined pool), and
-    skips anything left unstaged rather than erroring, so skipping a
-    qualifying source just means a smaller merged dataset, not a failure.
+    source, dataset_id, url, image_count), largest-first, plus separate
+    lists of any qualifying sources excluded for not being Roboflow Universe
+    and any excluded purely by the max_sources cap (named, not silently
+    dropped, so the calling agent can mention them in its summary) - or a
+    plain-text explanation if none currently qualify. Fetch/stage EVERY
+    listed (selected) index under sourced_dir/<index>/ - merge_and_split_
+    dataset merges whatever is staged across all of them (deduping
+    near-identical images and re-splitting the combined pool), and skips
+    anything left unstaged rather than erroring, so skipping a qualifying
+    source just means a smaller merged dataset, not a failure.
     """
     logger.info("list_qualifying_sources: reading %s (max_sources=%d)", sources_json_path, max_sources)
     try:
@@ -176,20 +195,37 @@ def list_qualifying_sources(
         logger.error("list_qualifying_sources: failed to load sources: %s", exc)
         return f"Error: {exc}"
 
-    candidates = [
+    qualifying = [
         (i, source)
         for i, source in enumerate(sources)
         if source.get("status") == "available"
         and str(source.get("annotation_format", "")).strip().lower() == "yolo"
     ]
-    logger.info("list_qualifying_sources: %d total sources, %d qualify (available + YOLO)", len(sources), len(candidates))
+    candidates = [(i, s) for i, s in qualifying if _is_roboflow_universe(s)]
+    non_roboflow = [(i, s) for i, s in qualifying if not _is_roboflow_universe(s)]
+    logger.info(
+        "list_qualifying_sources: %d total sources, %d qualify (available + YOLO), %d are Roboflow Universe, %d excluded as non-Roboflow",
+        len(sources), len(qualifying), len(candidates), len(non_roboflow),
+    )
     for i, src in enumerate(sources):
         logger.debug(
-            "  source[%d]: id=%s status=%s format=%s image_count=%s",
-            i, src.get('dataset_id'), src.get('status'), src.get('annotation_format'), src.get('image_count'),
+            "  source[%d]: id=%s status=%s format=%s image_count=%s url=%s",
+            i, src.get('dataset_id'), src.get('status'), src.get('annotation_format'), src.get('image_count'), src.get('url'),
         )
     if not candidates:
-        logger.warning("list_qualifying_sources: no qualifying candidates found")
+        logger.warning("list_qualifying_sources: no qualifying Roboflow Universe candidates found")
+        if non_roboflow:
+            lines = [
+                "No qualifying Roboflow Universe source found - only Roboflow Universe "
+                "sources are auto-fetchable right now. The following qualify on status/"
+                "format but are NOT Roboflow Universe, so they were not selected:",
+            ]
+            for i, source in non_roboflow:
+                lines.append(
+                    f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
+                    f"url={source.get('url')!r} image_count={source.get('image_count')!r}"
+                )
+            return "\n".join(lines)
         return (
             "No source currently qualifies (need status == 'available' and "
             "annotation_format == 'YOLO'). Nothing to fetch - report this back "
@@ -225,6 +261,17 @@ def list_qualifying_sources(
             lines.append(
                 f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
                 f"image_count={source.get('image_count')!r}"
+            )
+    if non_roboflow:
+        lines.append(
+            f"{len(non_roboflow)} additional source(s) qualify on status/format but are NOT "
+            "Roboflow Universe, so they were not selected - only Roboflow Universe is "
+            "auto-fetchable right now; mention these in your summary too:"
+        )
+        for i, source in non_roboflow:
+            lines.append(
+                f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
+                f"url={source.get('url')!r} image_count={source.get('image_count')!r}"
             )
     return "\n".join(lines)
 
