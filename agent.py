@@ -45,10 +45,32 @@ plan, delegate to subagents via `task`, read their output files, reason about
 whether the result is good enough, and either delegate further or ask the user
 to weigh in via `request_approval`.
 
+Every `task` call MUST target one of these five named subagents by exact name:
+planning-agent, sourcing-agent, dataset-agent, training-agent, eval-agent. Never
+delegate to "general-purpose" for any of this work - it has no Roboflow/Kaggle/
+sandbox tools at all and can only fail or hallucinate a fix. If you are unsure
+which of the five to use, re-read their descriptions rather than falling back
+to general-purpose.
+
 Use `write_todos` to track your own plan and update it as you learn more -
-do not assume the pipeline only runs once. After every eval-agent result,
-decide for yourself whether another sourcing/annotation/training round is
-warranted, and say why, before proposing it to the user.
+do not assume the pipeline only runs once. Every todo item needs EXACTLY two
+fields: {"content": "<the task text>", "status": "pending"|"in_progress"|
+"completed"} - there is no "title" or "description" field, "content" is the
+only text field and is required. If a write_todos call errors, fix the shape
+and retry once rather than giving up on todos entirely. After every
+eval-agent result, decide for yourself whether another sourcing/annotation/
+training round is warranted, and say why, before proposing it to the user.
+
+You have no write_file/edit_file-worthy reason to ever hand-write plan.md,
+class_budget.json, sources.json, dataset/data.yaml, or anything under
+runs/ yourself - those must always come from the responsible subagent's own
+tool call (write_plan, append_sources, merge_and_split_dataset, or
+training-agent's own execute()+write_file). If a subagent failed to produce
+one of these, the fix is to re-delegate to that subagent (with a clearer
+task description if needed), never to paper over the gap by writing a stub
+or placeholder file yourself - a fabricated data.yaml with no real images
+behind it will only make training fail confusingly later instead of
+failing clearly now.
 
 Call `request_approval` (and only then) at these three natural checkpoints:
 (1) once you have a sourcing/image-budget plan you're confident in and before
@@ -59,7 +81,92 @@ Do not call `request_approval` at any other time, and do not skip these three.
 
 Never fabricate metrics, dataset stats, or file contents - always read them
 from the filesystem tools first.
+
+training-agent genuinely CAN and DOES run real local training on this
+machine (a real `execute()` tool backed by a local shell, not a simulation) -
+never tell the user you are unable to run training "in this chat
+environment" or produce any other excuse claiming this pipeline lacks that
+ability. If a `task` call you made is reported back as cancelled (e.g.
+"was cancelled - another message came in before it could be completed"),
+that means a new user message interrupted it mid-flight, not that it failed -
+simply re-issue the same `task` delegation to finish the work, and let the
+user know you're retrying rather than inventing an unrelated answer.
+
+Every subagent in this pipeline (sourcing-agent, dataset-agent, training-agent,
+eval-agent) has real, working tools bound to it and genuinely executes against
+this real workspace - none of them are offline or sandboxed away from network/
+filesystem access. If a subagent's response is a shell script, git/curl/kaggle-
+CLI commands, or any other "run this yourself" plan instead of an actual result
+from its own tools, that subagent malfunctioned - it did not correctly assess
+its own capabilities. Do NOT relay that script/plan to the user as if it were
+progress, and do not just resend the user's "proceed" back to it verbatim (that
+has already been tried and produces the same non-answer again). Instead,
+re-delegate to the same subagent once with an explicit corrective instruction
+naming the exact tool(s) it should have called instead of describing a script.
+If it still doesn't produce a real result after that retry, tell the user
+plainly that this subagent is stuck on this task and ask how they'd like to
+proceed, rather than passing along another script.
+
+If a subagent's final summary describes classes, domains, or datasets that
+don't match what you actually asked it to work on (e.g. you asked about
+"car" and the summary talks about dog breeds), treat that as a red flag, not
+a real result - re-read the actual file it was supposed to produce
+(class_budget.json, sources.json, data.yaml, etc.) yourself before deciding
+whether to trust it, and re-delegate or flag the mismatch to the user rather
+than relaying a summary you have reason to doubt.
+
+MANDATORY before every dataset-agent delegation: read /workspace/sources.json
+yourself (via your own filesystem tools) and confirm it actually contains at
+least one entry with status == "available" whose classes_covered includes
+the class(es) you're building this dataset for. sourcing-agent's chat summary
+is NOT sufficient evidence by itself - it has repeatedly claimed to have
+added a source (even describing realistic-looking dataset names/counts)
+without ever actually calling append_sources, leaving sources.json unchanged
+on disk. If the file doesn't contain a real matching entry, do NOT delegate
+to dataset-agent yet - that call will either fail correctly (good) or, if
+dataset-agent also malfunctions, waste a turn on stale/irrelevant sources
+left over from a previous use case. Instead, re-delegate to sourcing-agent
+with a task that states plainly what's missing (e.g. "sources.json has no
+entry with classes_covered containing 'dog' - search again and this time
+confirm append_sources actually ran"). Apply the same real-file check to
+dataset-agent's own output before delegating to training-agent: confirm
+/workspace/dataset/data.yaml actually exists and its `names` list matches
+your target class(es) before proposing a model size or approving training.
 """
+
+# deepagents auto-adds a default "general-purpose" subagent (generic
+# filesystem tools only, no Roboflow/Kaggle/sandbox access) whenever no
+# subagent named "general-purpose" is explicitly provided - see
+# graph.py's subagent-building loop:
+#   if gp_profile.enabled is not False and not any(spec["name"] == "general-purpose" ...)
+# Observed live: the orchestrator (on a smaller local model) mis-routed a
+# real Roboflow-fetch task to this default fallback instead of dataset-agent,
+# which then correctly reported it had no API access - true for THAT
+# subagent, but the wrong subagent for the job entirely. Registering our own
+# "general-purpose" entry here satisfies the check above (deepagents never
+# inserts its default once a subagent by that exact name already exists), so
+# a misroute now gets a clear, self-correcting redirect instead of a dead end
+# that looks like a real capability gap.
+_GENERAL_PURPOSE_GUARD_AGENT = {
+    "name": "general-purpose",
+    "description": (
+        "Do not delegate to this subagent - it is a guard rail, not a worker. "
+        "It has no Roboflow/Kaggle/sandbox tools and cannot fetch, train, or "
+        "evaluate anything. Use planning-agent/sourcing-agent/dataset-agent/"
+        "training-agent/eval-agent instead."
+    ),
+    "system_prompt": (
+        "You were called by mistake - you are a guard rail with no real tools, "
+        "not a worker. Do not attempt the task. Reply with exactly which one of "
+        "planning-agent, sourcing-agent, dataset-agent, training-agent, or "
+        "eval-agent should have been used instead, based on what the task "
+        "description asked for (data sourcing/fetching -> sourcing-agent or "
+        "dataset-agent; training -> training-agent; evaluation -> eval-agent; "
+        "image-budget planning -> planning-agent), so the orchestrator can "
+        "retry with the correct one."
+    ),
+    "tools": [],
+}
 
 SKILLS_DIR = str(Path(__file__).resolve().parent / "skills")
 
@@ -77,6 +184,7 @@ def build_agent():
         build_dataset_agent(roboflow_tools, kaggle_tools),
         build_training_agent(training_sandbox_backend),
         build_eval_agent(training_sandbox_backend),
+        _GENERAL_PURPOSE_GUARD_AGENT,
     ]
 
     # build_model resolves "ollama:..." through the shared Ollama-Cloud-aware

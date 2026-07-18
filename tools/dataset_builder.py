@@ -24,10 +24,17 @@ getting sources into this shape, e.g. via Roboflow/Kaggle MCP tools or
                                                label files use)
 
 `<i>` is the 0-based index of that entry in sources.json's array. `classes.txt`
-is required per source because YOLO label files reference classes by numeric
-ID only - IDs are not portable across independently-annotated sources, so
-merging without remapping through each source's own class list would silently
-scramble labels.
+is required per YOLO-format source because YOLO label files reference classes
+by numeric ID only - IDs are not portable across independently-annotated
+sources, so merging without remapping through each source's own class list
+would silently scramble labels.
+
+Pascal VOC XML is also supported as an alternative to YOLO .txt labels - put
+`.xml` files (same stem as the image) in `labels/` instead, no `classes.txt`
+needed (VOC names each object's class directly as a string). Added after a
+live run hit a real academic dataset (Stanford Dogs) shipping in this format,
+not YOLO - see `_parse_pascal_voc_xml` for the conversion and its single-
+canonical-class special case.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ import mimetypes
 import random
 import shutil
 import tarfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -185,6 +193,83 @@ def _remap_label_file(
     return remapped or None
 
 
+def _parse_pascal_voc_xml(
+    xml_path: Path,
+    canonical_classes: list[str],
+    canonical_index: dict[str, int],
+) -> list[str] | None:
+    """Convert one Pascal VOC XML annotation into YOLO-format label lines.
+
+    Pascal VOC (the format Stanford Dogs and many other academic datasets ship
+    in) names each <object>'s class directly as a string and gives absolute
+    pixel bounding boxes - unlike YOLO, there's no numeric class-ID/classes.txt
+    indirection to resolve first.
+
+    Single-canonical-class special case: Stanford Dogs' own <name> fields are
+    the specific BREED (e.g. "chihuahua"), not "dog" - it's a fine-grained
+    120-breed dataset, not a generic dog/no-dog one. For single-class
+    detection (the common case here - one canonical class covering "any
+    breed"), matching <name> against the canonical class list would silently
+    drop every box. So: if there's exactly one canonical class, every object
+    in the file is treated as that class regardless of its literal <name> -
+    this is a real single-class detection use case, not a bug. With multiple
+    canonical classes, falls back to a case-insensitive exact match between
+    <name> and a canonical class name.
+
+    Returns the converted lines, or None if no object produced a valid box
+    (image should be dropped, same convention as `_remap_label_file`).
+    """
+    try:
+        root = ET.parse(xml_path).getroot()
+    except ET.ParseError:
+        return None
+
+    size = root.find("size")
+    if size is None:
+        return None
+    try:
+        img_w = float(size.findtext("width", ""))
+        img_h = float(size.findtext("height", ""))
+    except ValueError:
+        return None
+    if img_w <= 0 or img_h <= 0:
+        return None
+
+    single_class_id = 0 if len(canonical_classes) == 1 else None
+
+    lines: list[str] = []
+    for obj in root.findall("object"):
+        if single_class_id is not None:
+            canonical_id = single_class_id
+        else:
+            name = (obj.findtext("name") or "").strip().lower()
+            canonical_id = canonical_index.get(name)
+            if canonical_id is None:
+                continue
+
+        bndbox = obj.find("bndbox")
+        if bndbox is None:
+            continue
+        try:
+            xmin = float(bndbox.findtext("xmin", ""))
+            ymin = float(bndbox.findtext("ymin", ""))
+            xmax = float(bndbox.findtext("xmax", ""))
+            ymax = float(bndbox.findtext("ymax", ""))
+        except ValueError:
+            continue
+
+        width = (xmax - xmin) / img_w
+        height = (ymax - ymin) / img_h
+        if width <= 0 or height <= 0:
+            continue
+        x_center = ((xmin + xmax) / 2) / img_w
+        y_center = ((ymin + ymax) / 2) / img_h
+
+        lines.append(f"{canonical_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}")
+
+    return lines or None
+
+
 def _split_ratios(total: int) -> tuple[float, float, float]:
     """Train/val/test ratios per the cv-dataset-curation skill's split guidance."""
     if total >= 5000:
@@ -200,15 +285,27 @@ def merge_and_split_dataset(
     class_budget_path: str = "/workspace/class_budget.json",
     dedup_hash_threshold: int = 5,
     seed: int = 42,
+    max_total_images: int | None = None,
 ) -> str:
     """Merge locally-staged sources into one deduped, split YOLO dataset.
 
-    Reads `sources_json_path` and, for each entry with `status == "available"`
-    and `annotation_format == "YOLO"`, looks for that entry's raw files under
-    `sourced_dir/<index>/` (images/, labels/, classes.txt - see this module's
-    docstring for the exact convention). Entries with any other status (e.g.
-    `needs_annotation`) are skipped and reported, not silently dropped -
-    annotation-agent isn't part of this run, so those stay pending.
+    Reads `sources_json_path` and, for each entry with `status == "available"`,
+    looks for that entry's raw files under `sourced_dir/<index>/` (images/,
+    labels/ - see this module's docstring for the exact convention). Entries
+    with any other status (e.g. `needs_annotation`) are skipped and reported,
+    not silently dropped - annotation-agent isn't part of this run, so those
+    stay pending.
+
+    The annotation format actually present in `labels/` is auto-detected per
+    source (NOT trusted from sources.json's free-text `annotation_format`
+    field, which has been inconsistent in practice) - `.txt` files are treated
+    as YOLO (numeric class IDs, requires a `classes.txt` alongside to remap
+    them safely) and `.xml` files as Pascal VOC (class named directly per
+    object, no classes.txt needed - and if there's exactly one canonical
+    class, every object is treated as that class regardless of its literal
+    name, since fine-grained academic datasets like Stanford Dogs label the
+    specific breed, not a generic "dog" - see `_parse_pascal_voc_xml`). A
+    source with neither is skipped and reported, not silently dropped.
 
     Remaps each source's YOLO class IDs into one canonical class list (from
     `class_budget_path`, or the union of every source's `classes_covered` if
@@ -248,26 +345,44 @@ def merge_and_split_dataset(
         if status != "available":
             skipped.append(f"{label}: status={status!r} - not merged (needs annotation-agent, which isn't active this run)")
             continue
-        annotation_format = str(source.get("annotation_format", "")).strip().lower()
-        if annotation_format != "yolo":
-            skipped.append(f"{label}: annotation_format={source.get('annotation_format')!r} not supported yet (only YOLO-format sources auto-merge)")
-            continue
 
         source_dir = sourced_root / str(i)
         images_dir = source_dir / "images"
         labels_dir = source_dir / "labels"
-        local_classes = _read_classes_txt(source_dir)
-        if not images_dir.is_dir() or not labels_dir.is_dir() or local_classes is None:
+        if not images_dir.is_dir() or not labels_dir.is_dir():
             skipped.append(f"{label}: no local files at {sourced_dir}/{i}/ yet - fetch it first (Roboflow/Kaggle MCP tools or download_and_extract)")
+            continue
+
+        # Auto-detect annotation format from what's actually staged, rather
+        # than trusting sources.json's free-text annotation_format string
+        # (observed inconsistent values in practice: "YOLO (Roboflow)",
+        # "bounding boxes, class labels", "unknown", etc.) - YOLO .txt files
+        # need classes.txt for numeric-ID remapping; Pascal VOC .xml files
+        # name classes directly as strings and don't.
+        has_yolo_labels = any(labels_dir.glob("*.txt"))
+        has_voc_labels = any(labels_dir.glob("*.xml"))
+        local_classes = _read_classes_txt(source_dir) if has_yolo_labels else None
+        if has_yolo_labels and local_classes is None:
+            skipped.append(f"{label}: has .txt label files but no classes.txt at {sourced_dir}/{i}/ - can't remap numeric class IDs safely")
+            continue
+        if not has_yolo_labels and not has_voc_labels:
+            skipped.append(f"{label}: no recognized label files (.txt or .xml) at {sourced_dir}/{i}/labels/ yet")
             continue
 
         for image_path in sorted(images_dir.iterdir()):
             if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
-            label_path = labels_dir / f"{image_path.stem}.txt"
-            if not label_path.exists():
-                continue
-            remapped = _remap_label_file(label_path, local_classes, canonical_index)
+
+            if has_yolo_labels:
+                label_path = labels_dir / f"{image_path.stem}.txt"
+                if not label_path.exists():
+                    continue
+                remapped = _remap_label_file(label_path, local_classes, canonical_index)
+            else:
+                label_path = labels_dir / f"{image_path.stem}.xml"
+                if not label_path.exists():
+                    continue
+                remapped = _parse_pascal_voc_xml(label_path, canonical_classes, canonical_index)
             if remapped is None:
                 continue
 
@@ -293,6 +408,9 @@ def merge_and_split_dataset(
 
     rng = random.Random(seed)
     rng.shuffle(kept)
+    total_before_cap = len(kept)
+    if max_total_images is not None and max_total_images > 0:
+        kept = kept[:max_total_images]
     train_ratio, val_ratio, _test_ratio = _split_ratios(len(kept))
     n_train = round(len(kept) * train_ratio)
     n_val = round(len(kept) * val_ratio)
@@ -319,7 +437,15 @@ def merge_and_split_dataset(
                     class_counts[canonical_classes[class_id]] += 1
 
     data_yaml = {
-        "path": ".",
+        # Absolute, not "." - ultralytics resolves a relative `path` against
+        # whatever cwd `yolo detect train` happens to be invoked from, not
+        # against data.yaml's own directory. Confirmed live: training-agent's
+        # execute() runs with cwd=RUN_ARTIFACTS_DIR (this dataset's PARENT,
+        # not this directory itself), so "." resolved to the wrong directory
+        # and ultralytics reported images "not found" one level up from
+        # where they actually are. An absolute path is correct regardless of
+        # invocation cwd.
+        "path": str(out_root),
         "train": "images/train",
         "val": "images/val",
         "test": "images/test",
@@ -334,6 +460,11 @@ def merge_and_split_dataset(
         f"({train_ratio:.0%}/{val_ratio:.0%}/{1 - train_ratio - val_ratio:.0%}).",
         f"Per-class box counts (post-merge, all splits): {class_counts}",
     ]
+    if max_total_images is not None and total_before_cap > len(kept):
+        summary_lines.append(
+            f"Capped at max_total_images={max_total_images} ({total_before_cap} unique images were "
+            f"available after dedup; a random subset - seeded, reproducible - was kept)."
+        )
     if skipped:
         summary_lines.append("Skipped sources:")
         summary_lines.extend(f"- {s}" for s in skipped)

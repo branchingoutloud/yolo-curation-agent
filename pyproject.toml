@@ -17,6 +17,8 @@ dependencies = [
     "pyyaml",
     "pillow",
     "imagehash",
+    "ultralytics>=8.4.98",
+    "supervision>=0.29.1",
 ]
 # NOTE: ultralytics/supervision are NOT listed here on purpose - they run
 # inside the Modal sandbox image (see backends/sandboxes.py), never imported

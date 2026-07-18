@@ -131,8 +131,20 @@ def build_sandbox_subagent(
         if upload_paths:
             await asyncio.to_thread(_upload_sync)
 
+        # Without this, the inner agent inherits whatever recursion_limit the
+        # PARENT graph invocation was given (LangGraph's default is 100) -
+        # observed live: a real training-agent run hit that ceiling with no
+        # runs/ directory or status.md ever written, i.e. it was stuck
+        # cycling through checks/retries, not making 100 steps of genuine
+        # progress. Training/eval legitimately need more turns than a typical
+        # planning/sourcing delegation (environment checks, a long-running
+        # execute() call, status polling), so this raises the ceiling - but
+        # see the tightened system_prompt in subagents/training.py, which is
+        # the more important fix for the actual looping behavior itself.
+        inner_config = {**(config or {}), "recursion_limit": max((config or {}).get("recursion_limit", 0), 150)}
+
         try:
-            return await inner_agent.ainvoke(state, config=config)
+            return await inner_agent.ainvoke(state, config=inner_config)
         finally:
             if download_paths:
                 await asyncio.to_thread(_download_sync)

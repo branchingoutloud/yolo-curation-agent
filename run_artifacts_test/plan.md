@@ -1,17 +1,17 @@
 # Dataset Plan
 
-**Use case:** Detect forklifts and pedestrians to flag near‑misses in warehouse safety camera footage.
+**Use case:** detect forklifts and pedestrians in warehouse safety camera footage to flag near‑misses
 
-**Deployment target:** on‑prem server with a mid‑range GPU
+**Deployment target:** on-prem server with mid-range GPU
 
 ## Per-class image budget
 
 | Class | Variability | Images/class | Rationale |
 |---|---|---|---|
-| forklift | high | 2000 | High pose, lighting, and occlusion variability in warehouse scenes; meets high‑tier floor. |
-| pedestrian | very_high | 4000 | Extremely varied poses, clothing, and backgrounds; meets very‑high‑tier floor. |
+| forklift | moderate | 500 | standard forklift shape, limited pose diversity |
+| pedestrian | high | 1500 | wide pose and lighting variation |
 
 **Split ratios:** train=0.7, val=0.2, test=0.1
 
-**Notes:** Near real‑time detection for warehouse safety. Balanced representation to avoid bias.
+**Notes:** Near‑real‑time inference, target YOLOv8‑tiny or -nano for speed
 

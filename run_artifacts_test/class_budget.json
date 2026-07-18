@@ -4,17 +4,17 @@
     "pedestrian"
   ],
   "budgets": {
-    "forklift": 2000,
-    "pedestrian": 4000
+    "forklift": 500,
+    "pedestrian": 1500
   },
   "variability": {
-    "forklift": "high",
-    "pedestrian": "very_high"
+    "forklift": "moderate",
+    "pedestrian": "high"
   },
   "split_ratios": {
-    "test": 0.1,
     "train": 0.7,
-    "val": 0.2
+    "val": 0.2,
+    "test": 0.1
   },
-  "notes": "Near real\u2011time detection for warehouse safety. Balanced representation to avoid bias."
+  "notes": "Near\u2011real\u2011time inference, target YOLOv8\u2011tiny or -nano for speed"
 }
