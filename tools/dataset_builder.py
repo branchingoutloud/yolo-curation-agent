@@ -140,24 +140,36 @@ def _load_sources(sources_json_path: str) -> list[dict]:
 
 
 @tool
-def list_qualifying_sources(sources_json_path: str = "/workspace/sources.json") -> str:
-    """List every source mergeable right now, so all of them get fetched/merged.
+def list_qualifying_sources(
+    sources_json_path: str = "/workspace/sources.json",
+    max_sources: int = 3,
+) -> str:
+    """List which sources to fetch/merge right now, capped at max_sources.
 
     Filters sources_json_path down to entries with status == "available" and
     annotation_format == "YOLO" (the same filter merge_and_split_dataset
     applies) - real filtering over the file, not something the calling agent
-    has to eyeball itself across a long sources.json.
+    has to eyeball itself across a long sources.json. Sorts by image_count
+    descending and returns only the top `max_sources` (default 3) - forking
+    and exporting every qualifying source has real Roboflow API cost (a fork
+    + version-generate + export per source) for shrinking benefit once the
+    largest few are already merged, so this is capped rather than unlimited.
+    Enforced here in code rather than left to the calling agent to
+    self-limit, since a prompted "only fetch N of these" instruction is not
+    reliably followed.
 
-    Returns a plain-text list of every qualifying source (its 0-based index,
-    source, dataset_id, url, image_count), largest-first, or a plain-text
-    explanation if none currently qualify. Fetch/stage EVERY listed index
-    under sourced_dir/<index>/ - merge_and_split_dataset merges whatever is
-    staged across all of them (deduping near-identical images and
-    re-splitting the combined pool), and skips anything left unstaged rather
-    than erroring, so skipping a qualifying source just means a smaller
-    merged dataset, not a failure.
+    Returns a plain-text list of the selected sources (0-based index,
+    source, dataset_id, url, image_count), largest-first, plus a separate
+    list of any additional qualifying sources excluded purely by this cap
+    (named, not silently dropped, so the calling agent can mention them in
+    its summary) - or a plain-text explanation if none currently qualify.
+    Fetch/stage EVERY listed (selected) index under sourced_dir/<index>/ -
+    merge_and_split_dataset merges whatever is staged across all of them
+    (deduping near-identical images and re-splitting the combined pool), and
+    skips anything left unstaged rather than erroring, so skipping a
+    qualifying source just means a smaller merged dataset, not a failure.
     """
-    logger.info("list_qualifying_sources: reading %s", sources_json_path)
+    logger.info("list_qualifying_sources: reading %s (max_sources=%d)", sources_json_path, max_sources)
     try:
         sources = _load_sources(sources_json_path)
     except (ValueError, FileNotFoundError) as exc:
@@ -185,20 +197,35 @@ def list_qualifying_sources(sources_json_path: str = "/workspace/sources.json") 
         )
 
     candidates.sort(key=lambda pair: pair[1].get("image_count", 0) or 0, reverse=True)
+    selected = candidates[:max_sources]
+    dropped = candidates[max_sources:]
     logger.info(
-        "list_qualifying_sources: %d qualifying source(s): indices=%s",
-        len(candidates), [i for i, _ in candidates],
+        "list_qualifying_sources: %d qualifying, selecting top %d (indices=%s)%s",
+        len(candidates), len(selected), [i for i, _ in selected],
+        f" - dropped by cap: indices={[i for i, _ in dropped]}" if dropped else "",
     )
     lines = [
-        f"{len(candidates)} qualifying source(s) - fetch/stage EVERY index below, "
-        "then call merge_and_split_dataset once:"
+        f"{len(selected)} of {len(candidates)} qualifying source(s) selected (largest first, "
+        f"capped at max_sources={max_sources}) - fetch/stage EVERY index below, then call "
+        "merge_and_split_dataset once:"
     ]
-    for i, source in candidates:
+    for i, source in selected:
         lines.append(
             f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
             f"url={source.get('url')!r} image_count={source.get('image_count')!r} "
             f"classes_covered={source.get('classes_covered')!r}"
         )
+    if dropped:
+        lines.append(
+            f"{len(dropped)} additional qualifying source(s) NOT selected due to the "
+            f"max_sources={max_sources} cap - do not fetch these, but mention them in your "
+            "summary so the orchestrator knows more data exists for a future round:"
+        )
+        for i, source in dropped:
+            lines.append(
+                f"  index {i}: source={source.get('source')!r} dataset_id={source.get('dataset_id')!r} "
+                f"image_count={source.get('image_count')!r}"
+            )
     return "\n".join(lines)
 
 

@@ -30,11 +30,14 @@ from tools.model_builder import build_model
 # request. Trimming to the 9 tools plausibly needed to fetch/export a project
 # still landed at 8022 tokens - 22 over the limit - so this is cut further to
 # just the core fetch chain (find project -> fork -> generate a version ->
-# export -> download_and_extract the result). Add back projects_get/
-# projects_health/universe_dataset_images_search/image_upload individually if
-# a real run turns out to need one of them; this allowlist is deliberately
-# the minimum first guess, not a final answer - re-tune it once dataset-agent
-# has actually run against real Roboflow projects a few times.
+# export -> download_and_extract the result). Add back projects_health/
+# universe_dataset_images_search/image_upload individually if a real run
+# turns out to need one of them; this allowlist is deliberately the minimum
+# first guess, not a final answer - re-tune it once dataset-agent has
+# actually run against real Roboflow projects a few times. (The free-tier
+# token-limit problem itself is moot now that model calls run on Ollama
+# Cloud - no such per-request ceiling - but the allowlist is kept trim
+# anyway since it's still good practice.)
 #
 # `async_tasks_get` was missing here originally and is NOT optional:
 # `projects_fork` is an async operation that only returns a `taskId` - the
@@ -44,9 +47,41 @@ from tools.model_builder import build_model
 # what happened on a real live run: it found real Roboflow Universe sources
 # but reported it couldn't stage them, because the fetch chain was missing
 # a required step.
+#
+# `projects_get` and `projects_list` were added so dataset-agent can check
+# whether a Universe source has already been forked (and already has a
+# version) before forking or generating again - previously projects_fork/
+# versions_generate ran unconditionally every single time dataset-agent
+# processed the same source, silently creating a brand-new duplicate
+# fork/version on every re-run (e.g. a later iteration round after eval-agent
+# flags a weak class).
+#
+# IMPORTANT, confirmed by direct testing against the real MCP server:
+# `projects_get(project_id=<original Universe slug>)` succeeds and returns
+# full project details (images, classes, version history) EVEN IF the
+# caller has never forked that project - Roboflow Universe project metadata
+# is public. A successful projects_get on the source's own slug is NOT
+# proof of an existing fork, only that the project is public. Forked copies
+# also get a new, randomized project_id/slug (e.g. a Universe project named
+# "kangaroo" forks to something like "kangaroo-rkb3c-dgtlw" in the caller's
+# own workspace) - guessing that a fork reuses the source's original slug
+# does not reliably work either. The only reliable source of truth for
+# "have I already forked this" is `projects_list`, which is scoped to the
+# credential's own workspace - see the system_prompt for the exact check
+# (list once per run, match by name, not by assumed project_id).
+#
+# Also confirmed directly: versions_export's real response shape includes
+# `ready` (bool) and `progress` (0-100) - e.g. `{"ready": false, "progress":
+# 0}` for a freshly-triggered real export, no `link` field at all until
+# ready. A response that jumps straight to a `link` for a project that was
+# never actually verified-forked (see above) can produce a link that 404s
+# forever on download - that combination is a sign the project/version
+# isn't genuinely owned, not a "still processing, retry" situation.
 _ROBOFLOW_TOOL_ALLOWLIST = {
     "universe_search",
     "projects_fork",
+    "projects_get",
+    "projects_list",
     "async_tasks_get",
     "versions_generate",
     "versions_get",
@@ -91,13 +126,20 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             '"classes_covered": ["car"], "image_count": 1200, "annotation_format": "YOLO", '
             '"license": "...", "annotation_coverage": {"car": 800}, "quality_notes": "...", '
             '"status": "available"}\n'
-            "This run merges EVERY qualifying source, not just the biggest one - "
-            "sources.json is a catalog of candidates, and more qualifying sources means a "
-            "bigger merged dataset. Call list_qualifying_sources first: it filters to "
-            "entries with status == \"available\" and annotation_format == \"YOLO\" (the "
-            "only ones auto-mergeable right now) and returns every one of them (index, "
-            "dataset_id, url, image_count). Fetch/stage EVERY index it lists - do not skip "
-            "any qualifying entry. If list_qualifying_sources reports nothing qualifies "
+            "This run merges up to 3 qualifying sources (the largest, by image_count), not "
+            "just the single biggest one - but capped, not unlimited: forking and "
+            "exporting every qualifying source has real Roboflow API cost (a fork + "
+            "version-generate + export each) for shrinking benefit once the largest few "
+            "are already merged. Call list_qualifying_sources first: it filters to entries "
+            "with status == \"available\" and annotation_format == \"YOLO\" (the only ones "
+            "auto-mergeable right now), already applies this cap in code, and returns "
+            "exactly the sources you should fetch (index, dataset_id, url, image_count) "
+            "plus any other qualifying sources it deliberately excluded for being past the "
+            "cap. Fetch/stage EVERY index it lists - do not skip any of them - and do not "
+            "fetch anything beyond what it returns, even if sources.json has more "
+            "qualifying entries; mention any cap-excluded sources in your final summary so "
+            "the orchestrator knows more data exists if a future round wants it. If "
+            "list_qualifying_sources reports nothing qualifies "
             "(e.g. every source still needs annotation), say so plainly rather than fetching "
             "anything - annotation-agent is not part of the active roster in this run, so a "
             "\"needs_annotation\" source cannot be used no matter its image_count.\n\n"
@@ -117,22 +159,68 @@ def build_dataset_agent(roboflow_tools: list, kaggle_tools: list) -> SubAgent:
             "Only fetch a listed source if its files are missing. Repeat the fetch for EVERY "
             "listed index before merging - one source's failure doesn't excuse skipping the "
             "others. For a Roboflow Universe source (found via universe_search, not one you "
-            "already own), the fetch chain is exactly this sequence per source - none of "
-            "these steps can be skipped or assumed:\n"
-            "  1. projects_fork(url=<the source's Universe URL>) - this is ASYNC and only "
-            "returns {taskId, url}, not a finished fork.\n"
-            "  2. async_tasks_get(task_id=taskId) - poll every ~5s until status is "
+            "already own), first check whether it's already been forked into your own "
+            "workspace before creating anything new - forking again or generating another "
+            "version of a project you already forked just creates wasteful duplicates. "
+            "IMPORTANT: projects_get(project_id=<the source's original Universe slug>) is "
+            "NOT a valid way to check this - Universe project metadata is public, so "
+            "projects_get succeeds and returns real project/version data for ANY public "
+            "Universe project whether or not you have ever forked it. A forked copy also "
+            "gets a brand-new, randomized project_id (e.g. a Universe project \"kangaroo\" "
+            "forks to something like \"kangaroo-rkb3c-dgtlw\" in your own workspace), so "
+            "guessing the fork reuses the source's original slug will not reliably find "
+            "it either. The only reliable check is projects_list, which is scoped to your "
+            "own workspace:\n"
+            "  1. Call projects_list() once per dataset-agent run (not once per source) "
+            "and keep the result - it returns every project already in your own workspace "
+            "as {projects, total, limit, offset}.\n"
+            "  2. For each source, check whether any entry in that list matches it by "
+            "name (case-insensitive, tolerant of a randomized slug suffix - compare "
+            "against the `name` field, not an assumed project_id). If found, use that "
+            "entry's real `id` as project_id for every step below and skip straight to "
+            "step 5 - do not fork it again.\n"
+            "  3. projects_fork(url=<the source's Universe URL>) - only if step 2 found "
+            "no match. This is ASYNC and only returns {taskId, url}, not a finished fork.\n"
+            "  4. async_tasks_get(task_id=taskId) - poll every ~10s until status is "
             "'completed' (or 'failed', in which case report the failure and move on rather "
-            "than retrying indefinitely).\n"
-            "  3. versions_generate(project_id=...) using the forked project's id - omit "
-            "preprocessing/augmentation (accept its defaults) since you have no way to "
-            "confirm those choices with the user mid-run; note in your summary that "
-            "defaults were used so the orchestrator can flag it if that matters.\n"
-            "  4. versions_get(project_id, version_number) - poll until the version is "
-            "ready, not still generating.\n"
-            "  5. versions_export(project_id, version_number, export_format=\"yolov8\") - "
-            "check/trigger the export; once it returns a download URL, pass that directly "
-            "to download_and_extract(url=..., dest_dir=\"/workspace/sourced/<index>/\").\n"
+            "than retrying indefinitely). Once completed, this response gives you the "
+            "forked project's real id - use that, never the original Universe slug.\n"
+            "  5. projects_get(project_id=<the real id from step 2 or step 4>) - inspect "
+            "its `versions` list. If at least one version already exists, reuse its "
+            "version_number and skip straight to step 7 - do NOT call versions_generate "
+            "on a project that already has a version, since that creates a new duplicate "
+            "version every time this runs.\n"
+            "  6. versions_generate(project_id=...) - only if step 5 found no existing "
+            "version. Omit preprocessing/augmentation (accept its defaults) since you have "
+            "no way to confirm those choices with the user mid-run; note in your summary "
+            "that defaults were used so the orchestrator can flag it if that matters.\n"
+            "  7. versions_get(project_id, version_number) - poll every ~10s until the "
+            "version is ready, not still generating.\n"
+            "  8. versions_export(project_id, version_number, export_format=\"yolov8\") - "
+            "the response includes `ready` (bool) and `progress` (0-100), e.g. "
+            "`{\"ready\": false, \"progress\": 0}` for a freshly-triggered real export, "
+            "with no `link` field at all until ready. While `ready` is false, wait ~10s "
+            "and call versions_export again rather than treating an in-progress response "
+            "as a failure - keep polling this way for up to ~2 minutes total; larger "
+            "datasets may genuinely need longer, so if it is still not ready after that, "
+            "say so explicitly in your summary rather than silently giving up. Only once "
+            "`ready` is true and a real download link is present, pass that link directly "
+            "to download_and_extract(url=..., dest_dir=\"/workspace/sourced/<index>/\"). "
+            "If download_and_extract ever fails on a link that WAS reported ready (e.g. a "
+            "404 on the underlying storage URL) - that is NOT a \"still processing, keep "
+            "retrying\" situation, it is a sign this project/version was never genuinely "
+            "yours to export (most likely step 2's name-match was wrong and this is "
+            "actually still someone else's public Universe project). Do not keep retrying "
+            "blindly in that case - report the exact error and which project_id was used, "
+            "so the mismatch can be investigated rather than masked by more retries.\n"
+            "Forking, generating a version, and exporting only stage this source's raw "
+            "files locally under /workspace/sourced/<index>/ - that is not the final "
+            "dataset. This source still goes through the same merge_and_split_dataset step "
+            "as every other staged source below (pooled, deduped by perceptual hash, "
+            "class-remapped, and re-split); nothing about a Roboflow fork is special-cased "
+            "there. Nothing in this chain ever uploads the merged result back to Roboflow "
+            "either - the merged dataset only ever exists locally under output_dir, never "
+            "on the Roboflow dashboard, so don't expect to see it there.\n"
             "For a Kaggle source, use download_dataset or a direct-download URL with "
             "download_and_extract instead - no fork/version chain applies there.\n"
             "If any step fails or a required tool isn't available, say so plainly and "

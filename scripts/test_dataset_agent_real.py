@@ -112,7 +112,7 @@ async def main(roboflow_tools: list, kaggle_tools: list):
                 )
             ]
         },
-        config={"recursion_limit": 75},
+        config={"recursion_limit": 300},
     )
 
     print("=== FINAL MESSAGE ===")
